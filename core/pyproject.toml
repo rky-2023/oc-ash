@@ -1,0 +1,59 @@
+[project]
+name = "openclaw-core"
+version = "0.1.0"
+description = "openclaw central FastAPI service (auth, MCP proxy, A2A router, audit appender)"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "rky", email = "rky2023@gmail.com" }]
+readme = "README.md"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlmodel>=0.0.22",
+    "asyncpg>=0.30",
+    "nats-py>=2.9",
+    "immudb-py>=1.5.0",
+    "httpx>=0.27",
+    "python-jose[cryptography]>=3.3",
+    "webauthn>=2.5",
+    "structlog>=24.4",
+    "prometheus-client>=0.21",
+    "python-ulid>=2.7",
+    "hvac>=2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PL"]
+ignore = ["PLR0913"]   # allow >5 args (common in FastAPI handlers)
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+disallow_untyped_defs = true

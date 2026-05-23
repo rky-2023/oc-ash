@@ -1,0 +1,210 @@
+# openclaw infrastructure compose
+#
+# Anchors:
+#   ADR-001 D1 (separate service, shared infra)
+#   ADR-001 D3 (NATS JetStream spine)
+#   ADR-001 D4 (immudb audit ledger)
+#   ADR-002 D8 (Vault AppRoles, mTLS via vault-agent)
+#   ADR-002 D12 (Postgres for low-value config; reuses Ashboard Postgres — not declared here)
+#
+# Operator notes:
+#   - This file is intentionally NOT auto-starting `core`. The `core` service is gated
+#     behind the `phase2-complete` profile so it only comes up after Vault has been
+#     initialised + unsealed (Phase 1 task 1.3) and downstream services are configured
+#     (Phase 2 tasks 2.3 / 2.4 / 2.5).
+#   - Image tags are pinned by version here; Phase 10 hardening replaces them with
+#     content-addressable digests (`@sha256:...`) + cosign verification.
+#   - dm-crypt mount points (/var/lib/openclaw/{vault,immudb,nats,minio}) MUST exist
+#     and be mounted before `docker compose up` — see Phase 1 task 1.1 and Phase 2
+#     tasks 2.2 / 2.4.
+#   - Reuses Ashboard's Postgres / Redis / Mosquitto / Grafana / Prometheus —
+#     defined in /home/asher/docker-compose.yml, NOT here.
+
+name: openclaw
+
+networks:
+  oc-internal:
+    driver: bridge
+    internal: false  # services need outbound for upstream APIs; ingress remains tailnet-only
+    name: oc-internal
+
+volumes:
+  vault-data:
+    name: oc-vault-data
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/openclaw/vault
+      o: bind
+  immudb-data:
+    name: oc-immudb-data
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/openclaw/immudb
+      o: bind
+  nats-data:
+    name: oc-nats-data
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/openclaw/nats
+      o: bind
+  minio-data:
+    name: oc-minio-data
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/openclaw/minio
+      o: bind
+
+services:
+  # ───────────────────────────────────────────────────────────────────
+  # Vault — secret + transit + PKI store (Phase 1).
+  # Must be initialised + unsealed manually per Phase 1 task 1.3.
+  # ───────────────────────────────────────────────────────────────────
+  vault:
+    image: hashicorp/vault:1.18.0
+    container_name: oc-vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK   # required for mlock so secrets don't swap
+    networks:
+      - oc-internal
+    ports:
+      - "127.0.0.1:8200:8200"   # localhost only; never internet-exposed
+    volumes:
+      - vault-data:/vault/data
+      - ./vault/config:/vault/config:ro
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_API_ADDR: "http://127.0.0.1:8200"
+    command: server -config=/vault/config/server.hcl
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ───────────────────────────────────────────────────────────────────
+  # immudb — WORM audit ledger (Phase 2, ADR-003).
+  # Internal network only; openclaw-core is the sole client.
+  # ───────────────────────────────────────────────────────────────────
+  immudb:
+    image: codenotary/immudb:1.9.5
+    container_name: oc-immudb
+    restart: unless-stopped
+    networks:
+      - oc-internal
+    # No port published to host.
+    volumes:
+      - immudb-data:/var/lib/immudb
+    healthcheck:
+      test: ["CMD", "immuadmin", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ───────────────────────────────────────────────────────────────────
+  # NATS JetStream — event bus (Phase 2 task 2.4).
+  # Streams declared in infra/nats/streams.yaml; created by Phase 2 bootstrap.
+  # ───────────────────────────────────────────────────────────────────
+  nats:
+    image: nats:2.10-alpine
+    container_name: oc-nats
+    restart: unless-stopped
+    networks:
+      - oc-internal
+    # No port published; internal NATS clients only.
+    volumes:
+      - nats-data:/data
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ───────────────────────────────────────────────────────────────────
+  # MinIO — encrypted blob storage for audit archive tier (ADR-003 D9).
+  # ───────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: oc-minio
+    restart: unless-stopped
+    networks:
+      - oc-internal
+    # No public ports; openclaw-core writes via internal network.
+    volumes:
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env.openclaw}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env.openclaw}"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ───────────────────────────────────────────────────────────────────
+  # OPA — policy engine (Phase 2 task 2.7 + Phase 4 mcp policy).
+  # Bundles loaded from ../policy at startup; hot-reload via signal in Phase 4.
+  # ───────────────────────────────────────────────────────────────────
+  opa:
+    image: openpolicyagent/opa:0.69.0
+    container_name: oc-opa
+    restart: unless-stopped
+    networks:
+      - oc-internal
+    volumes:
+      - ../policy:/policy:ro
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policy"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8181/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ───────────────────────────────────────────────────────────────────
+  # openclaw-core — gated behind `phase2-complete` profile.
+  # Bring up explicitly with:
+  #   docker compose --profile phase2-complete up core
+  # This ensures the operator has finished Phase 1 + Phase 2 setup first.
+  # ───────────────────────────────────────────────────────────────────
+  core:
+    profiles: ["phase2-complete"]
+    build:
+      context: ../core
+      dockerfile: Dockerfile
+    image: openclaw/core:0.1.0-scaffold
+    container_name: oc-core
+    restart: unless-stopped
+    networks:
+      - oc-internal
+    depends_on:
+      vault:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      immudb:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    environment:
+      OC_ENV: "${OC_ENV:-development}"
+      OC_LOG_LEVEL: "${OC_LOG_LEVEL:-info}"
+      OC_VAULT_ADDR: "http://vault:8200"
+      OC_NATS_URL: "nats://nats:4222"
+      OC_IMMUDB_HOST: "immudb"
+      OC_IMMUDB_PORT: "3322"
+      OC_OPA_URL: "http://opa:8181"
+      # All actual secrets injected via vault-agent sidecar files in /run/secrets/openclaw/*.
+      # See Phase 1 task 1.12 (vault-agent sidecar template) and ADR-002 D8.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://127.0.0.1:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
