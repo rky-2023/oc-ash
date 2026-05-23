@@ -28,25 +28,62 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCHEMA_FILE="$REPO_DIR/infra/postgres/openclaw-schema.sql"
 [[ -f "$SCHEMA_FILE" ]] || die "schema file not found: $SCHEMA_FILE"
 
-# ── Locate the Postgres container ────────────────────────────────────
+# ── Pick connection mode: docker container OR system service ────────
+# Operators can force one or the other via env:
+#   OC_PG_MODE=docker    + OC_PG_CONTAINER=<name>
+#   OC_PG_MODE=system    (uses `sudo -u postgres psql` via peer auth)
+# Otherwise we auto-detect: docker first, system as fallback.
+
+PG_MODE="${OC_PG_MODE:-}"
 PG_CONTAINER="${OC_PG_CONTAINER:-}"
-if [[ -z "$PG_CONTAINER" ]]; then
-  # Try common names from the Ashboard compose
-  for candidate in postgres ashboard-postgres ashboard_postgres oc-postgres; do
+PG_SUPER_USER="${OC_PG_SUPER_USER:-}"
+
+if [[ -z "$PG_MODE" ]]; then
+  # Try docker first
+  for candidate in postgres asher-postgres-1 ashboard-postgres-1 ashboard-postgres ashboard_postgres oc-postgres; do
     if docker ps --format '{{.Names}}' | grep -qx "$candidate"; then
+      PG_MODE="docker"
       PG_CONTAINER="$candidate"
+      PG_SUPER_USER="${PG_SUPER_USER:-ashboard}"   # Ashboard's compose creates 'ashboard' as superuser
       break
     fi
   done
+  # Fall back to system if no docker postgres
+  if [[ -z "$PG_MODE" ]] && systemctl is-active --quiet "postgresql@*-main.service" 2>/dev/null \
+       || systemctl is-active --quiet postgresql 2>/dev/null \
+       || pgrep -x postgres >/dev/null 2>&1; then
+    PG_MODE="system"
+    PG_SUPER_USER="${PG_SUPER_USER:-postgres}"
+  fi
 fi
-[[ -n "$PG_CONTAINER" ]] || die \
-  "Could not auto-detect a running Postgres container. Set OC_PG_CONTAINER=<name>."
-log "Postgres container: $PG_CONTAINER"
+
+[[ -n "$PG_MODE" ]] || die \
+  "No Postgres found (neither a docker container nor a system service).
+   To use Ashboard's docker postgres:  cd /home/asher && docker compose up -d postgres
+   To use system postgres:             sudo systemctl start postgresql"
+
+# Wrapper: run psql via whichever path applies. Reads SQL from stdin.
+psql_super() {
+  case "$PG_MODE" in
+    docker)
+      docker exec -i "$PG_CONTAINER" psql -U "$PG_SUPER_USER" -v ON_ERROR_STOP=1 "$@"
+      ;;
+    system)
+      sudo -u postgres psql -v ON_ERROR_STOP=1 "$@"
+      ;;
+  esac
+}
+
+log "Postgres mode:       $PG_MODE"
+case "$PG_MODE" in
+  docker) log "Postgres container:  $PG_CONTAINER" ;;
+  system) log "Postgres connection: system (sudo -u postgres psql via peer auth)" ;;
+esac
+log "Postgres superuser:  $PG_SUPER_USER"
 
 # ── Apply schema as the postgres superuser ──────────────────────────
 log "Applying openclaw schema (idempotent)..."
-docker exec -i "$PG_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 \
-  < "$SCHEMA_FILE" \
+psql_super < "$SCHEMA_FILE" \
   | grep -vE '^(GRANT|CREATE|INSERT|ALTER|DO|COMMENT|SET)$' || true
 
 # ── AppRole login to Vault ──────────────────────────────────────────
@@ -70,8 +107,7 @@ log "Storing new openclaw_app password in Vault at kv/openclaw/postgres/app"
 vault_exec kv put kv/openclaw/postgres/app password="$NEW_PW" >/dev/null
 
 log "Setting openclaw_app password in Postgres"
-docker exec -i "$PG_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 \
-  -c "ALTER ROLE openclaw_app WITH LOGIN PASSWORD '$NEW_PW';" >/dev/null
+psql_super -c "ALTER ROLE openclaw_app WITH LOGIN PASSWORD '$NEW_PW';" >/dev/null
 
 unset NEW_PW ADMIN_TOKEN
 
@@ -82,4 +118,7 @@ log "  role:        openclaw_app  (password rotated, stored in kv/openclaw/postg
 log "  lookup rows: see openclaw.lookup"
 log ""
 log "Verify:"
-log "  docker exec $PG_CONTAINER psql -U openclaw_app -c '\\\\dt openclaw.*'"
+case "$PG_MODE" in
+  docker) log "  docker exec $PG_CONTAINER psql -U openclaw_app -c '\\dt openclaw.*'" ;;
+  system) log "  sudo -u postgres psql -c '\\dt openclaw.*'" ;;
+esac
