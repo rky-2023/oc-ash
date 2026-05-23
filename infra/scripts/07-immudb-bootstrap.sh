@@ -242,7 +242,7 @@ ensure_user appender  readwrite "$APPENDER_PW"
 vault_kv_put kv/openclaw/immudb/appender password "$APPENDER_PW"
 log "  ✓ appender password stored in Vault"
 
-ensure_user projector readonly "$PROJECTOR_PW"
+ensure_user projector read "$PROJECTOR_PW"
 vault_kv_put kv/openclaw/immudb/projector password "$PROJECTOR_PW"
 log "  ✓ projector password stored in Vault"
 
