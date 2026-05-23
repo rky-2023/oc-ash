@@ -46,6 +46,18 @@ log()  { printf '\033[1;36m[oc-luks]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[oc-luks WARN]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[oc-luks ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Tmpfs-backed key file for cryptsetup. Lives in RAM only; shredded on
+# script exit regardless of how we exit. cryptsetup's `--key-file -`
+# (read from stdin) is finicky with piped input in some versions —
+# using a real file path is more robust and never persists to disk.
+KEY_TMP=""
+cleanup_key_tmp() {
+  if [[ -n "$KEY_TMP" && -e "$KEY_TMP" ]]; then
+    shred -u "$KEY_TMP" 2>/dev/null || rm -f "$KEY_TMP"
+  fi
+}
+trap cleanup_key_tmp EXIT INT TERM
+
 require_root() {
   if [[ $EUID -ne 0 ]]; then
     die "Must run as root. Try: sudo $0"
@@ -95,14 +107,14 @@ create_volume() {
   # 2. luksFormat (idempotent: skip if already LUKS-formatted)
   if ! cryptsetup isLuks "$img" 2>/dev/null; then
     log "    Running cryptsetup luksFormat..."
-    printf '%s' "$LUKS_PASSPHRASE" | cryptsetup luksFormat \
+    cryptsetup luksFormat \
       --type luks2 \
       --cipher aes-xts-plain64 \
       --key-size 512 \
       --hash sha512 \
       --pbkdf argon2id \
       --batch-mode \
-      --key-file - \
+      --key-file "$KEY_TMP" \
       "$img"
   else
     log "    Already luksFormat-ed; skipping"
@@ -111,7 +123,7 @@ create_volume() {
   # 3. Open (only if not already open)
   if [[ ! -e "/dev/mapper/$mapper" ]]; then
     log "    Opening LUKS container as /dev/mapper/$mapper..."
-    printf '%s' "$LUKS_PASSPHRASE" | cryptsetup open --key-file - "$img" "$mapper"
+    cryptsetup open --key-file "$KEY_TMP" "$img" "$mapper"
   else
     log "    /dev/mapper/$mapper already open; skipping"
   fi
@@ -176,23 +188,36 @@ main() {
 
   # Prompt for the shared bootstrap passphrase (one for all 4 volumes).
   # Store it in your password manager AFTER this run — see Phase 1 runbook.
+  local passphrase passphrase_confirm
   if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
     echo
-    read -srp "Bootstrap LUKS passphrase (will be used for all 4 volumes): " LUKS_PASSPHRASE
+    read -srp "Bootstrap LUKS passphrase (will be used for all 4 volumes): " passphrase
     echo
-    read -srp "Confirm passphrase: " LUKS_PASSPHRASE_CONFIRM
+    read -srp "Confirm passphrase: " passphrase_confirm
     echo
-    if [[ "$LUKS_PASSPHRASE" != "$LUKS_PASSPHRASE_CONFIRM" ]]; then
+    if [[ "$passphrase" != "$passphrase_confirm" ]]; then
       die "Passphrases do not match"
     fi
-    if (( ${#LUKS_PASSPHRASE} < 20 )); then
+    if (( ${#passphrase} < 20 )); then
       warn "Passphrase is shorter than 20 characters. STRONGLY recommend >= 32."
       read -rp "Continue anyway? [y/N] " yn
       [[ "$yn" =~ ^[Yy]$ ]] || die "Aborted by operator"
     fi
+  else
+    passphrase="$LUKS_PASSPHRASE"
   fi
-  unset LUKS_PASSPHRASE_CONFIRM
-  export LUKS_PASSPHRASE
+  unset passphrase_confirm
+
+  # Write the passphrase to a tmpfs file that cryptsetup will read from.
+  # /dev/shm is RAM-only, so the bytes never touch disk.
+  KEY_TMP=$(mktemp -p /dev/shm oc-luks-key.XXXXXX)
+  chmod 600 "$KEY_TMP"
+  # printf without newline — cryptsetup reads the whole file as the key,
+  # so any trailing newline would change the key material.
+  printf '%s' "$passphrase" > "$KEY_TMP"
+  # Forget the variable copy immediately.
+  unset passphrase
+  unset LUKS_PASSPHRASE
 
   log ""
   log "Creating volumes..."
@@ -200,7 +225,7 @@ main() {
     create_volume "$name" "${SIZES[$name]}"
   done
 
-  unset LUKS_PASSPHRASE
+  # KEY_TMP shredded by EXIT trap.
 
   log ""
   log "✓ All openclaw volumes created and mounted."
