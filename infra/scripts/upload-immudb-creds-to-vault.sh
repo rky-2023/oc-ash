@@ -35,11 +35,15 @@ unset SECRET_ID ROLE_ID
 [[ -n "$TOK" ]] || die "Vault AppRole login failed."
 log "AppRole login OK."
 
-# Upload each — pass passwords via stdin so they don't show in /proc/<pid>/cmdline.
+# Upload each. We use the direct `kv put PATH key=value` form, which puts
+# the password briefly in /proc/<pid>/cmdline. Acceptable for a
+# single-operator host where root already sees everything; the alternative
+# stdin path requires JSON formatting and escaping that's needlessly
+# complex for this one-shot bootstrap.
 upload() {
   local path="$1" pw="$2"
-  printf 'password=%s\n' "$pw" \
-    | docker exec -i -e VAULT_TOKEN="$TOK" oc-vault vault kv put "$path" - >/dev/null
+  docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+    vault kv put "$path" "password=$pw" >/dev/null
   log "  ✓ uploaded $path"
 }
 
