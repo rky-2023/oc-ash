@@ -84,7 +84,15 @@ services:
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
       VAULT_API_ADDR: "http://127.0.0.1:8200"
-    command: server -config=/vault/config/server.hcl
+    # The hashicorp/vault entrypoint auto-injects `-config=/vault/config`
+    # when the first arg is `server`. /vault/config is the directory we
+    # bind-mount our config into, and Vault loads every *.hcl in it. So
+    # we must NOT also pass `-config=/vault/config/server.hcl` explicitly —
+    # that would make Vault load the same file twice (once as part of the
+    # dir, once explicitly), producing duplicate listener stanzas and an
+    # in-process "address already in use" on bind. `command: server` is
+    # all we want.
+    command: server
     healthcheck:
       test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
       interval: 30s
