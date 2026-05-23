@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
 # Phase 2 task 2.3 — bring up immudb + create audit database + users
 # ----------------------------------------------------------------------
-# Brings up the immudb container (declared in
-# infra/docker-compose.openclaw.yml), rotates the default admin password,
-# creates the openclaw_audit database, and creates two users:
-#   - appender  (R/W on openclaw_audit)  — used by audit-appender
-#   - projector (R-only on openclaw_audit) — used by audit-projector
-# Passwords are random + stored in Vault under
-# kv/openclaw/immudb/{admin,appender,projector}.
+# The codenotary/immudb image is distroless (no /bin/sh) AND immuadmin's
+# `login` / `user create` / `user changepassword` commands accept passwords
+# ONLY via interactive prompt (no --password flag, no env var). We
+# therefore drive every immuadmin invocation through `expect`, which
+# allocates a pty and sends the prompt responses.
 #
-# Important: the codenotary/immudb image is DISTROLESS — no shell, no
-# chown, no coreutils. All immuadmin invocations therefore use direct
-# `docker exec` calls, not `sh -c '...'` wrappers. Readiness is checked
-# via `docker inspect` (container State.Status + Health.Status).
+# Operator prerequisites:
+#   - Install expect once:  sudo apt install -y expect
+#   - Vault unsealed; openclaw-admin AppRole credentials ready
+#   - dm-crypt /mnt/openclaw/immudb mounted (from 00)
 #
-# Bind-target ownership: we chown /mnt/openclaw/immudb to uid 3322
-# (the immudb user inside the container) BEFORE compose-up. This must
-# happen on the host as root because the container can't fix its own
-# filesystem ownership on a distroless image (no chown binary).
-#
-# Idempotent: re-running rotates passwords and re-applies the schema.
-# Failures terminate via `die` — no silent advance through broken state.
+# Idempotent: re-running rotates the admin password (using the value
+# already in Vault), re-applies the database / user state. First run
+# (Vault empty for kv/openclaw/immudb/admin) uses the default
+# `immudb`/`immudb` credentials; immudb 1.9+ forces a change on first
+# login, which the expect script handles inline.
 
 set -euo pipefail
 
@@ -29,13 +25,15 @@ warn() { printf '\033[1;33m[oc-immudb WARN]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[oc-immudb ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Run as root (sudo)."
+command -v expect >/dev/null || die "expect not installed. sudo apt install -y expect"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 mountpoint -q /mnt/openclaw/immudb || die "/mnt/openclaw/immudb not mounted. Run 00 first."
 
-# ── Chown the bind target BEFORE container start ────────────────────
-log "Setting /mnt/openclaw/immudb ownership to immudb uid (3322:3322, mode 700)"
+# ── Chown bind target BEFORE container start ───────────────────────
+log "Setting /mnt/openclaw/immudb ownership to 3322:3322"
 chown -R 3322:3322 /mnt/openclaw/immudb
 chmod 700 /mnt/openclaw/immudb
 
@@ -46,25 +44,18 @@ if ! docker ps --format '{{.Names}}' | grep -qx oc-immudb; then
     -f "$INFRA_DIR/docker-compose.openclaw.yml" up -d immudb
 fi
 
-# ── Wait for the container to be healthy ────────────────────────────
-# Distroless image — can't shell-out a TCP probe. We use docker inspect:
-# Status=="running" AND (Health.Status=="healthy" OR no healthcheck).
 log "Waiting for oc-immudb to be running + healthy..."
 ready=false
 for i in $(seq 1 60); do
   state=$(docker inspect oc-immudb --format '{{.State.Status}}' 2>/dev/null || echo missing)
-  if [[ "$state" != "running" ]]; then
-    sleep 1; continue
-  fi
-  # Healthcheck may not have run yet; tolerate missing field
-  health=$(docker inspect oc-immudb --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || echo none)
+  [[ "$state" == "running" ]] || { sleep 1; continue; }
+  health=$(docker inspect oc-immudb --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')
   if [[ "$health" == "healthy" || "$health" == "none" ]]; then
-    ready=true
-    break
+    ready=true; break
   fi
   sleep 1
 done
-$ready || die "immudb didn't reach a healthy state in 60s — check 'docker logs oc-immudb'."
+$ready || die "immudb didn't reach healthy state in 60s. Check 'docker logs oc-immudb'."
 log "immudb is ready."
 
 # ── AppRole login to Vault ──────────────────────────────────────────
@@ -84,77 +75,165 @@ vault_exec() { docker exec -e VAULT_TOKEN="$ADMIN_TOKEN" oc-vault vault "$@"; }
 vault_kv_put() { vault_exec kv put "$1" "$2=$3" >/dev/null; }
 vault_kv_get() { vault_exec kv get -field="$2" "$1" 2>/dev/null || true; }
 
-# ── Determine current admin password ────────────────────────────────
 CUR_ADMIN_PW=$(vault_kv_get kv/openclaw/immudb/admin password)
+FIRST_RUN=false
 if [[ -z "$CUR_ADMIN_PW" ]]; then
   CUR_ADMIN_PW="immudb"
+  FIRST_RUN=true
   log "No admin password in Vault — assuming default ('immudb', first run)"
 else
   log "Loaded current admin password from Vault."
 fi
 
-# ── Helpers that talk directly to immuadmin (no sh in image) ────────
-# Pipe stdin via `docker exec -i`. immuadmin's login persists a token
-# in /home/immudb/.immudb/token (inside the container) so subsequent
-# exec calls reuse the session.
-immuadmin() {
-  docker exec -i oc-immudb immuadmin "$@"
+# ── expect-driven helpers ───────────────────────────────────────────
+# Each helper returns 0 on success, non-zero on any prompt mismatch.
+
+# Login. On first run with default creds, immudb 1.9 forces a password
+# change. We provide CUR_PW twice (current + new) and reuse CUR_PW so
+# the password isn't actually rotated by the forced flow — we control
+# the rotation later in a deliberate step.
+immu_login() {
+  local pw="$1" force_change="$2"  # force_change="yes" or "no"
+  if [[ "$force_change" == "yes" ]]; then
+    expect <<EXPECT
+log_user 0
+set timeout 15
+spawn docker exec -i oc-immudb immuadmin login immudb
+expect "Password:" { send -- "$pw\r" }
+expect {
+  "Choose a password for immudb:" {
+    send -- "$pw\r"
+    expect "continue with your password instead"
+    send -- "Y\r"
+    expect "Confirm password:"
+    send -- "$pw\r"
+    expect eof
+  }
+  "logged in" { expect eof }
+  timeout    { exit 1 }
+  "invalid"  { exit 2 }
+}
+EXPECT
+  else
+    expect <<EXPECT
+log_user 0
+set timeout 15
+spawn docker exec -i oc-immudb immuadmin login immudb
+expect "Password:" { send -- "$pw\r" }
+expect {
+  "logged in" { expect eof }
+  timeout    { exit 1 }
+  "invalid"  { exit 2 }
+}
+EXPECT
+  fi
 }
 
-immuadmin_login() {
-  local pw="$1"
-  printf '%s\n' "$pw" | immuadmin login immudb >/dev/null
+immu_change_admin_pw() {
+  local old="$1" new="$2"
+  expect <<EXPECT
+log_user 0
+set timeout 15
+spawn docker exec -i oc-immudb immuadmin user changepassword immudb
+expect "Old password:" { send -- "$old\r" }
+expect {
+  "New password:" {
+    send -- "$new\r"
+    expect "Confirm new password:"
+    send -- "$new\r"
+    expect eof
+  }
+  timeout { exit 1 }
+}
+EXPECT
 }
 
-# ── Login as admin (verify CUR_ADMIN_PW is correct) ─────────────────
-log "Logging in as admin (verifying current password)"
-immuadmin_login "$CUR_ADMIN_PW" \
-  || die "Admin login failed with password from Vault. If you're certain you have the right one in Vault, the actual immudb password may have drifted (e.g., from a partial earlier run). Wipe /mnt/openclaw/immudb and the kv/openclaw/immudb/* Vault entries, then re-run."
+immu_create_user() {
+  local user="$1" perm="$2" pw="$3" db="$4"
+  expect <<EXPECT
+log_user 0
+set timeout 15
+spawn docker exec -i oc-immudb immuadmin user create $user $perm $db
+expect "Choose a password for $user:" { send -- "$pw\r" }
+expect "Confirm password:"            { send -- "$pw\r" }
+expect eof
+EXPECT
+}
 
-# ── Generate new passwords ──────────────────────────────────────────
+# Change another user's password as admin. immuadmin prompts for new + confirm.
+immu_change_user_pw() {
+  local user="$1" new="$2"
+  expect <<EXPECT
+log_user 0
+set timeout 15
+spawn docker exec -i oc-immudb immuadmin user changepassword $user
+expect {
+  "New password:" {
+    send -- "$new\r"
+    expect "Confirm new password:"
+    send -- "$new\r"
+    expect eof
+  }
+  "Choose a password for $user:" {
+    send -- "$new\r"
+    expect "Confirm password:"
+    send -- "$new\r"
+    expect eof
+  }
+  timeout { exit 1 }
+}
+EXPECT
+}
+
+immu_db_list() { docker exec oc-immudb immuadmin database list 2>/dev/null || true; }
+immu_db_create() { docker exec oc-immudb immuadmin database create "$1" >/dev/null; }
+immu_user_list() { docker exec oc-immudb immuadmin user list 2>/dev/null || true; }
+
+# ── Login as admin ──────────────────────────────────────────────────
+log "Logging in as admin (forced password change handled inline if first run)"
+if [[ "$FIRST_RUN" == "true" ]]; then
+  immu_login "$CUR_ADMIN_PW" yes \
+    || die "Admin login failed. Default password may not match; immudb may have been initialised previously."
+  # immudb's "forced change" left us at the same password (we sent it back).
+else
+  immu_login "$CUR_ADMIN_PW" no \
+    || die "Admin login failed with Vault password. Vault may be out of sync with immudb."
+fi
+log "  ✓ admin login OK"
+
+# ── Rotate admin password ───────────────────────────────────────────
 gen_pw() { openssl rand -base64 32 | tr -d '\n' | tr '/+' '_-'; }
 NEW_ADMIN_PW=$(gen_pw)
 APPENDER_PW=$(gen_pw)
 PROJECTOR_PW=$(gen_pw)
 
-# ── Rotate admin password ───────────────────────────────────────────
 log "Rotating admin password"
-# `immuadmin user changepassword <user>` prompts for: old, new, new-confirm
-printf '%s\n%s\n%s\n' "$CUR_ADMIN_PW" "$NEW_ADMIN_PW" "$NEW_ADMIN_PW" \
-  | immuadmin user changepassword immudb >/dev/null \
-  || die "Admin password change failed. Old password possibly wrong; check Vault state vs. immudb state."
+immu_change_admin_pw "$CUR_ADMIN_PW" "$NEW_ADMIN_PW" \
+  || die "Admin password rotation failed."
 vault_kv_put kv/openclaw/immudb/admin password "$NEW_ADMIN_PW"
 log "  ✓ admin password rotated + stored in Vault"
 
-# Re-login with new password so subsequent commands use a fresh session.
-immuadmin_login "$NEW_ADMIN_PW"
+# Re-login with the new password so the token cached in the container is fresh
+immu_login "$NEW_ADMIN_PW" no || die "Re-login with new admin password failed."
 
-# ── Create openclaw_audit database (idempotent) ─────────────────────
+# ── Create openclaw_audit database ──────────────────────────────────
 log "Ensuring database 'openclaw_audit' exists"
-if immuadmin database list 2>/dev/null | grep -q '\bopenclaw_audit\b'; then
+if immu_db_list | grep -qw openclaw_audit; then
   log "  database openclaw_audit already exists"
 else
-  immuadmin database create openclaw_audit >/dev/null \
-    || die "Failed to create database openclaw_audit"
+  immu_db_create openclaw_audit || die "Failed to create database openclaw_audit"
   log "  ✓ database openclaw_audit created"
 fi
 
-# ── Helper: create-or-rotate user ───────────────────────────────────
-# `immuadmin user list` lists users including 'immudb', 'appender', 'projector'.
+# ── Create-or-rotate users ──────────────────────────────────────────
 ensure_user() {
   local user="$1" perm="$2" pw="$3"
-  if immuadmin user list 2>/dev/null | grep -q "\b$user\b"; then
+  if immu_user_list | grep -qw "$user"; then
     log "  user '$user' exists — rotating password"
-    # `immuadmin user changepassword <user>` as admin: prompts for new + confirm.
-    # (Admin doesn't need the user's current password.)
-    printf '%s\n%s\n' "$pw" "$pw" \
-      | immuadmin user changepassword "$user" >/dev/null \
-      || die "Could not rotate password for user '$user'"
+    immu_change_user_pw "$user" "$pw" || die "Could not rotate password for '$user'"
   else
     log "  creating user '$user' with $perm on openclaw_audit"
-    printf '%s\n%s\n' "$pw" "$pw" \
-      | immuadmin user create "$user" "$perm" openclaw_audit >/dev/null \
-      || die "Could not create user '$user'"
+    immu_create_user "$user" "$perm" "$pw" openclaw_audit || die "Could not create user '$user'"
   fi
 }
 
