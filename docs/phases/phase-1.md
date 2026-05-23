@@ -66,34 +66,36 @@ Replace any paper share with a metal seed plate at the same location. The most i
 
 Each task is independently completable and verifiable. Tasks marked **[hands-on]** require physical action; everything else is software.
 
-### 1.1 Prep the dm-crypt volume for Vault storage
+### 1.1 Prep the dm-crypt volumes for openclaw services
 
-**Why:** Vault's storage backend holds wrapped secrets at rest. We want it on a dedicated encrypted volume so that even a host backup tool that grabs `/var/lib/openclaw/` can't see the wrapped bytes without the LUKS passphrase.
+**Why:** Vault, immudb, NATS, and MinIO all hold sensitive data. We want them on dedicated encrypted volumes so that even a host backup tool that grabs `/var/lib/openclaw/` can't see the wrapped bytes without the LUKS passphrase.
+
+**Script:** [`infra/scripts/00-create-luks-volumes.sh`](../../infra/scripts/00-create-luks-volumes.sh) — creates 4 LUKS-on-file containers (vault 8 GiB / immudb 50 GiB / nats 20 GiB / minio 50 GiB), one shared bootstrap passphrase, mounts under `/var/lib/openclaw/<name>/`. Idempotent.
 
 **Steps:**
-- Allocate a small partition or loop-mounted file (8 GB is plenty for a personal deployment).
-- `cryptsetup luksFormat` with a long passphrase. Store the passphrase in your password manager (NOT alongside Shamir shares — Vault unseal and disk unlock are separate ceremonies on purpose).
-- Mount at `/var/lib/openclaw/vault/` with `noexec,nosuid,nodev`.
-- Add a `systemd` mount unit so reboots prompt for the passphrase before Vault tries to start.
+1. Run as root: `sudo ./infra/scripts/00-create-luks-volumes.sh`
+2. The script prompts for a single bootstrap passphrase used across all 4 volumes. Save this passphrase in your password manager **separately** from your Shamir shares — disk unlock and Vault unseal are independent ceremonies on purpose.
+3. After the script completes, set up `/etc/crypttab` + `/etc/fstab` entries (the script prints templates) so the volumes prompt-mount on boot.
 
-**Verify:** `cryptsetup status vault-data` shows the mapping active and the cipher is `aes-xts-plain64` (default) or `aes-xts` family.
+**Verify:** `cryptsetup status oc-vault-luks` shows the mapping active and the cipher is `aes-xts-plain64`. `mountpoint /var/lib/openclaw/vault` returns success.
+
+**Per-volume passphrase rotation (optional, later):** if you want different passphrases per volume, use `cryptsetup luksAddKey <img>` + `luksRemoveKey` after bootstrap. The LUKS header has 8 key slots.
 
 ---
 
-### 1.2 Install Vault
+### 1.2 Bring up Vault
 
 **Why:** Vault is the universal CA + KV store + transit signer + AppRole broker. Almost everything downstream needs it.
 
-**Steps:**
-- Pull the official Vault binary release (verify SHA256 from HashiCorp + Cosign signature if available).
-- Place at `/usr/local/bin/vault`, owned root:root, mode 0755.
-- Configure as a `systemd` unit running as a dedicated `vault` user.
-- Storage stanza: `raft` (integrated storage), data dir `/var/lib/openclaw/vault/`.
-- Listener: `tcp` bound to `127.0.0.1:8200` only — Vault is never directly internet-exposed; access is via openclaw-core which proxies needed operations.
-- `disable_mlock = false` — keep mlock on (the default) so secrets don't swap.
-- TLS: self-signed bootstrap cert for the listener (we replace it with a Vault-PKI-issued cert in 1.7).
+**Note on deployment model:** Vault runs as a container per the Phase 2 scaffold's `infra/docker-compose.openclaw.yml`. The container is built from `hashicorp/vault:1.18.0`, binds only `127.0.0.1:8200`, mounts the dm-crypt volume from 1.1, and uses Raft integrated storage with `disable_mlock = false` and TLS bootstrap-disabled (re-enabled in 1.7 with a Vault-PKI-issued cert).
 
-**Verify:** `systemctl status vault` shows active; `vault status` returns "Sealed: true" (expected — we initialize next).
+**Script:** [`infra/scripts/01-bring-up-vault.sh`](../../infra/scripts/01-bring-up-vault.sh) — pre-flight checks (volume mounted, docker reachable) + `docker compose up -d vault` + waits for the container to become reachable + prints status.
+
+**Steps:**
+1. `sudo ./infra/scripts/01-bring-up-vault.sh`
+2. Vault will be **running but sealed and uninitialized** — expected first-run state.
+
+**Verify:** `docker exec oc-vault vault status` reports `Initialized: false, Sealed: true`.
 
 ---
 
@@ -101,16 +103,22 @@ Each task is independently completable and verifiable. Tasks marked **[hands-on]
 
 **Why:** This is the irreversible ceremony that produces the recovery shares.
 
-**Steps:**
-- Run `vault operator init -key-shares=5 -key-threshold=3`.
-- Vault prints 5 unseal keys + 1 root token. **Capture them once; do not lose this moment.**
-- **[hands-on]** Immediately distribute the 5 shares per the table above. Metal plate first (it's the only one that matters in a fire). Paper second. Optional encrypted USB last.
-- The root token is **destroyed** after step 1.5 — copy it to a temporary file only, and only for the next few minutes.
+**Scripts:**
+- [`infra/scripts/02-init-vault.sh`](../../infra/scripts/02-init-vault.sh) — one-time `vault operator init -key-shares=5 -key-threshold=3`. Refuses to run if Vault is already initialized. Prints all 5 keys + the root token to your terminal once.
+- [`infra/scripts/03-unseal-vault.sh`](../../infra/scripts/03-unseal-vault.sh) — interactive 3-share unseal. Run this both after init AND on every reboot (Vault is sealed by design at startup — ADR-001 R1).
+
+**Steps (first time only):**
+1. `sudo ./infra/scripts/02-init-vault.sh` — confirm by typing `READY`. Vault prints 5 unseal keys + 1 root token.
+2. **[hands-on]** Immediately distribute the 5 shares per the cost-free distribution table in the prerequisites section (wallet / drawer / family / password manager / obscure on-site spot). Copy down the root token to a temporary location — you need it for task 1.6.
+3. **Clear your terminal scrollback** before walking away: `reset; clear; history -c` (or just close + reopen the window).
+4. `sudo ./infra/scripts/03-unseal-vault.sh` — prompts for any 3 of your 5 shares (hidden input). After the 3rd share Vault is unsealed.
+
+**Steps (every reboot):**
+- `sudo ./infra/scripts/03-unseal-vault.sh` — same prompt, same 3 shares.
 
 **Verify:**
-- `vault operator unseal <share-1>`, `<share-2>`, `<share-3>` in sequence; after the third Vault is unsealed.
-- `vault status` shows `Sealed: false`.
-- **[hands-on]** Practice a cold unseal: stop Vault, start Vault, unseal from your stored shares. Time it. If it takes more than 5 minutes, your share storage is too inconvenient — fix it now while it's fresh.
+- `docker exec oc-vault vault status` shows `Sealed: false`.
+- **[hands-on]** Practice a cold unseal: `docker compose -f infra/docker-compose.openclaw.yml restart vault` → run `03-unseal-vault.sh` from your stored shares. Time it. If it takes more than 5 minutes, your share storage is too inconvenient — fix it now while it's fresh.
 
 ---
 
@@ -402,3 +410,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 - **2026-05-23 (v1)** — Drafted alongside ADR-002 and ADR-003 acceptance. Will be revised once execution begins and real-world friction surfaces.
 - **2026-05-23 (v1.1)** — Task 1.5 Vault path layout aligned with ADR-002 D12 (Secret-vs-config split): public-by-design lookups (client_id, app_id, installation_ids, rp_id, FCM project IDs, redaction policy hash) moved out of `kv/openclaw/` and into the Postgres `openclaw.lookup` schema (created in Phase 2 task 2.1).
 - **2026-05-23 (v1.2)** — Prerequisites restructured into "steady-state hardware" (ADR-002 D2) and "cost-free interim" (ADR-002 D13) tracks. Cost-free Shamir distribution table added with concrete locations and hard rules. Tasks 1.9/1.10 split into 1.9a/1.9b/1.10a/1.10b reflecting interim platform-authenticator path and steady-state YubiKey path.
+- **2026-05-23 (v1.3)** — Tasks 1.1, 1.2, 1.3 rewritten to reference the new `infra/scripts/` helpers (00-create-luks-volumes / 01-bring-up-vault / 02-init-vault / 03-unseal-vault). 1.1 expanded to cover all 4 dm-crypt volumes (vault + immudb + nats + minio) since Phase 2 needs them too. 1.2 reframed: Vault runs as a docker-compose container, not a host systemd unit, matching the Phase 2 scaffold.
