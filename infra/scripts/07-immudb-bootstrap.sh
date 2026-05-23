@@ -98,7 +98,7 @@ immu_login() {
     expect <<EXPECT
 log_user 0
 set timeout 15
-spawn docker exec -i oc-immudb immuadmin login immudb
+spawn docker exec -it oc-immudb immuadmin login immudb
 expect "Password:" { send -- "$pw\r" }
 expect {
   "Choose a password for immudb:" {
@@ -118,7 +118,7 @@ EXPECT
     expect <<EXPECT
 log_user 0
 set timeout 15
-spawn docker exec -i oc-immudb immuadmin login immudb
+spawn docker exec -it oc-immudb immuadmin login immudb
 expect "Password:" { send -- "$pw\r" }
 expect {
   "logged in" { expect eof }
@@ -134,7 +134,7 @@ immu_change_admin_pw() {
   expect <<EXPECT
 log_user 0
 set timeout 15
-spawn docker exec -i oc-immudb immuadmin user changepassword immudb
+spawn docker exec -it oc-immudb immuadmin user changepassword immudb
 expect "Old password:" { send -- "$old\r" }
 expect {
   "New password:" {
@@ -153,7 +153,7 @@ immu_create_user() {
   expect <<EXPECT
 log_user 0
 set timeout 15
-spawn docker exec -i oc-immudb immuadmin user create $user $perm $db
+spawn docker exec -it oc-immudb immuadmin user create $user $perm $db
 expect "Choose a password for $user:" { send -- "$pw\r" }
 expect "Confirm password:"            { send -- "$pw\r" }
 expect eof
@@ -166,7 +166,7 @@ immu_change_user_pw() {
   expect <<EXPECT
 log_user 0
 set timeout 15
-spawn docker exec -i oc-immudb immuadmin user changepassword $user
+spawn docker exec -it oc-immudb immuadmin user changepassword $user
 expect {
   "New password:" {
     send -- "$new\r"
