@@ -8,7 +8,7 @@
 #   ./03-unseal-vault.sh  — interactive unseal (every reboot)
 #
 # Prerequisites:
-#   - ./00-create-luks-volumes.sh has been run (mount /var/lib/openclaw/vault exists)
+#   - ./00-create-luks-volumes.sh has been run (mount /mnt/openclaw/vault exists)
 #   - docker + docker compose installed
 #   - Run from the infra/scripts/ directory (or any other; we resolve paths)
 
@@ -26,8 +26,8 @@ die()  { printf '\033[1;31m[oc-vault-up ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Pre-flight ────────────────────────────────────────────────────
 [[ -f "$COMPOSE_FILE" ]] || die "compose file not found at $COMPOSE_FILE"
-mountpoint -q /var/lib/openclaw/vault \
-  || die "/var/lib/openclaw/vault is not mounted. Run 00-create-luks-volumes.sh first."
+mountpoint -q /mnt/openclaw/vault \
+  || die "/mnt/openclaw/vault is not mounted. Run 00-create-luks-volumes.sh first (or migrate-mount-paths-to-mnt.sh if you bootstrapped with the old /var/lib paths)."
 
 # .env.openclaw is gitignored and holds bootstrap-only env values (per
 # ADR-002 D12: real production secrets come from vault-agent at runtime).

@@ -27,7 +27,7 @@ INIT_STATUS=$(docker exec oc-vault vault status -address=http://127.0.0.1:8200 \
   -format=json 2>/dev/null || true)
 
 if echo "$INIT_STATUS" | grep -q '"initialized":true'; then
-  die "Vault is ALREADY INITIALIZED. Aborting to protect existing data. If you really want to start over, you must wipe /var/lib/openclaw/vault first."
+  die "Vault is ALREADY INITIALIZED. Aborting to protect existing data. If you really want to start over, you must wipe /mnt/openclaw/vault first."
 fi
 
 # ── Big-red-button confirmation ───────────────────────────────────
