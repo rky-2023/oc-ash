@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Register — openclaw</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Register a device</h1>
+    <p class="hint">
+      Pick a username (just an identifier on this server — not visible publicly)
+      and enroll a passkey. Use your laptop's built-in security (Touch ID, Windows
+      Hello, TPM2 + libfido2) or your browser's passkey manager.
+    </p>
+
+    <form id="form">
+      <label>Username
+        <input type="text" id="username" required minlength="1" maxlength="64"
+               autocomplete="off" autocapitalize="off" spellcheck="false">
+      </label>
+      <label>Display name
+        <input type="text" id="display_name" required minlength="1" maxlength="64"
+               autocomplete="off">
+      </label>
+      <label>Nickname for this device (optional)
+        <input type="text" id="nickname" maxlength="64" placeholder="e.g. 'work laptop'">
+      </label>
+      <button type="submit">Enroll passkey</button>
+    </form>
+
+    <pre id="log" class="log"></pre>
+    <p><a href="/">← back</a></p>
+  </main>
+  <script src="/static/auth.js"></script>
+  <script>
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const display_name = document.getElementById('display_name').value.trim();
+      const nickname = document.getElementById('nickname').value.trim() || null;
+      try {
+        await ocAuth.register({ username, display_name, nickname });
+        ocAuth.log(`✓ enrolled. Session token saved in localStorage.`);
+        ocAuth.log(`Visit /login to sign in next time.`);
+      } catch (err) {
+        ocAuth.log(`✗ error: ${err.message}`);
+      }
+    });
+  </script>
+</body>
+</html>

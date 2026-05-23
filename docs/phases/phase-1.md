@@ -246,22 +246,82 @@ docker exec oc-vault vault list -format=json pki_int/issuers       # at least on
 
 ---
 
-### 1.8 Set up the WebAuthn relying party
+### 1.8 WebAuthn relying-party endpoints (in `core/`)
 
-**Why:** Before enrolling YubiKeys we need a Relying Party (RP) configured. The RP is the openclaw web UI's tiny FastAPI stub, served only on the tailnet.
+**Status (Phase 1 task 1.8 MVP):** server endpoints + minimal HTML/JS pages shipped; runnable locally over HTTP (RP_ID = localhost). Phone-via-QR cross-device enrollment needs HTTPS on a tailnet domain — that's a follow-up (Tailscale-HTTPS task), not part of 1.8.
 
-**Steps:**
-- Stand up a minimal FastAPI service at `core/` (just the auth endpoints — no audit, no MCP yet). Run it with mTLS on the tailnet under a name like `oc.<tailnet>.ts.net`.
-- Configure RP:
-  - `RP ID = oc.<tailnet>.ts.net`
-  - `RP Name = openclaw`
-  - `pubKeyCredParams = [Ed25519 (alg -8)]`
-  - `authenticatorSelection.residentKey = required`
-  - `userVerification = required`
-  - `attestation = direct`
-- Store the credential admin key (used to revoke credentials administratively) in Vault `transit/keys/webauthn-admin`. **The key is generated inside Vault transit and never exported.**
+**What's in MVP:**
 
-**Verify:** `curl https://oc.<tailnet>.ts.net/auth/webauthn/options` returns valid registration options JSON.
+| Component | File | Purpose |
+|---|---|---|
+| Registration begin/complete | `core/app/auth/router.py` + `webauthn_handlers.py` | `POST /auth/register/{begin,complete}` |
+| Authentication begin/complete | (same) | `POST /auth/login/{begin,complete}` |
+| Session token check | `core/app/auth/router.py` | `GET /auth/me` — requires `Authorization: Bearer …` |
+| Credential storage | `core/app/auth/db.py` | SQLite at `settings.auth_db_path` (default `/var/lib/openclaw-core/auth.db`). Tables: `users`, `webauthn_credentials`, `pending_challenges`. |
+| Session signer | `core/app/auth/sessions.py` | Process-local HS256 key (regenerated on every restart). Phase 2 task 2.5 swaps this for `transit/sign/core-jwt` via Vault. |
+| WebAuthn settings | `core/app/config.py` | `webauthn_rp_id`, `webauthn_rp_name`, `webauthn_expected_origins_csv`, `auth_db_path` |
+| Browser UI | `core/app/web/{index,register,login}.html` + `static/{style.css,auth.js}` | Vanilla HTML+JS; uses WebAuthn Level 3 JSON (`PublicKeyCredential.parseCreationOptionsFromJSON`). |
+
+**Per ADR-002 D1:**
+- `residentKey = required` ✓
+- `userVerification = required` ✓
+- `attestation = direct` ✓
+- `supported_pub_key_algs = [EDDSA (-8), ES256 (-7)]` ✓ (Ed25519 preferred; ES256 for broader authenticator compatibility)
+
+**Run it (host, no docker):**
+
+```sh
+cd /home/asher/openclaw/core
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Storage dir (one-time)
+sudo install -d -o $USER -m 0700 /var/lib/openclaw-core
+
+# Bring it up (HTTP, localhost only)
+uvicorn app.main:app --reload --port 8000
+```
+
+Open Chrome / Edge / Safari / Firefox to **http://localhost:8000** (WebAuthn allows localhost without HTTPS by spec). Click **Register a new device**, enter a username + display name, click **Enroll passkey**. The browser will prompt for whatever passkey support you have:
+
+- macOS Touch ID — if available
+- Windows Hello PIN — if available
+- Linux libfido2 + TPM2 PIN — if available
+- Browser-stored passkey (Chrome / Safari password managers)
+- **Phone via QR — won't work over plain HTTP-on-localhost.** Needs HTTPS-on-tailnet (future PR).
+
+Then click **Log in**, leave username blank (uses the resident-key credential), authenticate with the same passkey, then click **Show /auth/me** to see your session.
+
+**Verify:**
+
+```sh
+# Liveness
+curl -s http://localhost:8000/auth/health
+# {"ok": true, "subsystem": "auth"}
+
+# Begin a registration manually
+curl -s -X POST http://localhost:8000/auth/register/begin \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"smoke","display_name":"smoke"}' | python3 -m json.tool
+# Should print challenge_id + options object with rp/user/challenge fields.
+```
+
+Run the unit smoke:
+
+```sh
+cd /home/asher/openclaw/core
+pytest tests/test_auth_smoke.py -v
+```
+
+**Deferred to Phase 2 task 2.5:**
+
+- mTLS on the listener (currently HTTP-on-localhost for dev only).
+- Vault transit signing for session tokens (currently process-local key — restart invalidates all sessions, acceptable v1 trade-off).
+- Refresh-token rotation (currently single 15-min access token per login; re-auth required after).
+- Postgres migration of the credential store (Phase 2 task 2.1).
+- jti deny-list for active revocation (currently process restart wipes all sessions).
+- vault-agent sidecar wiring for `core` (template ready in `infra/vault-agent/` from task 1.12; consumer wiring lands in 2.5).
 
 ---
 
@@ -455,3 +515,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 - **2026-05-23 (v1.4)** — Task 1.1 mount points moved from `/var/lib/openclaw/<svc>/` to `/mnt/openclaw/<svc>/` because snap-installed Docker is confined and cannot see `/var/lib/`. LUKS image files remain at `/var/lib/openclaw/luks/<svc>.img` (Docker never accesses those). Docker-compose bind-mount paths and rollback procedure 3 updated accordingly.
 - **2026-05-23 (v1.5)** — Tasks 1.4 / 1.5 / 1.6 collapsed into a single ceremony backed by `infra/scripts/04-vault-bootstrap.sh`. Script enables audit log, mounts kv-v2 + pki_root + pki_int + transit + approle, generates the internal CA hierarchy with 24h-TTL Ed25519 server/client roles, creates the named transit keys, mints the `openclaw-admin` AppRole, and (gated by typing DESTROY) revokes the root token. Task 1.7 mostly absorbed by 1.5 — only the "swap Vault's bootstrap listener to its own pki_int cert" step remains.
 - **2026-05-23 (v1.6)** — Task 1.7 completed via `infra/scripts/05-vault-tls-listener.sh`. New `pki_int/roles/vault-listener` (30-day TTL); server.hcl, docker-compose.openclaw.yml updated to enable TLS + verify via `/vault/data/tls/ca.crt`. CA cert published to `/mnt/openclaw/shared/ca.crt` for downstream services. Scripts 01–04 stripped of explicit `-address=http://...` flags (env wins). Task 1.12 vault-agent sidecar template added at `infra/vault-agent/` (Dockerfile + template config + README) — not wired into any service yet; Phase 2 task 2.5 picks it up.
+- **2026-05-23 (v1.7)** — Task 1.8 MVP shipped. WebAuthn relying-party endpoints in `core/app/auth/` (register/begin, register/complete, login/begin, login/complete, /auth/me). SQLite credential store at `/var/lib/openclaw-core/auth.db`. Process-local HS256 session signer (Vault transit deferred to Phase 2 task 2.5). Minimal HTML/JS browser pages at `/`, `/register`, `/login` using WebAuthn Level 3 JSON. RP_ID=localhost for dev; tailnet-HTTPS + phone-via-QR is a follow-up.

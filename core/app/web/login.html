@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Log in — openclaw</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Log in</h1>
+    <p class="hint">
+      Use the passkey you enrolled on this device. Leave username blank to
+      let the browser find a resident-key credential automatically.
+    </p>
+
+    <form id="form">
+      <label>Username (optional)
+        <input type="text" id="username" maxlength="64"
+               autocomplete="username webauthn"
+               autocapitalize="off" spellcheck="false">
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+
+    <pre id="log" class="log"></pre>
+
+    <p>
+      <button type="button" id="me">Show /auth/me</button>
+      <button type="button" id="clear">Clear session</button>
+    </p>
+
+    <p><a href="/">← back</a></p>
+  </main>
+  <script src="/static/auth.js"></script>
+  <script>
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim() || null;
+      try {
+        await ocAuth.login({ username });
+        ocAuth.log(`✓ signed in. Session token saved in localStorage.`);
+      } catch (err) {
+        ocAuth.log(`✗ error: ${err.message}`);
+      }
+    });
+    document.getElementById('me').addEventListener('click', async () => {
+      try {
+        const me = await ocAuth.me();
+        ocAuth.log(`/auth/me → ${JSON.stringify(me, null, 2)}`);
+      } catch (err) {
+        ocAuth.log(`✗ error: ${err.message}`);
+      }
+    });
+    document.getElementById('clear').addEventListener('click', () => {
+      localStorage.removeItem('oc.session');
+      ocAuth.log(`Session cleared.`);
+    });
+  </script>
+</body>
+</html>
