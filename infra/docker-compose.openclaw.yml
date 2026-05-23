@@ -14,9 +14,14 @@
 #     (Phase 2 tasks 2.3 / 2.4 / 2.5).
 #   - Image tags are pinned by version here; Phase 10 hardening replaces them with
 #     content-addressable digests (`@sha256:...`) + cosign verification.
-#   - dm-crypt mount points (/var/lib/openclaw/{vault,immudb,nats,minio}) MUST exist
+#   - dm-crypt mount points (/mnt/openclaw/{vault,immudb,nats,minio}) MUST exist
 #     and be mounted before `docker compose up` — see Phase 1 task 1.1 and Phase 2
 #     tasks 2.2 / 2.4.
+#   - Mount points live under /mnt/ instead of /var/lib/ because snap-installed
+#     Docker is confined and can only see /home (with snap connect docker:home),
+#     /mnt, and /media. /mnt is the most portable choice. The LUKS image files
+#     themselves can live anywhere — Docker never touches those, only the
+#     unlocked mount points.
 #   - Reuses Ashboard's Postgres / Redis / Mosquitto / Grafana / Prometheus —
 #     defined in /home/asher/docker-compose.yml, NOT here.
 
@@ -34,28 +39,28 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: /var/lib/openclaw/vault
+      device: /mnt/openclaw/vault
       o: bind
   immudb-data:
     name: oc-immudb-data
     driver: local
     driver_opts:
       type: none
-      device: /var/lib/openclaw/immudb
+      device: /mnt/openclaw/immudb
       o: bind
   nats-data:
     name: oc-nats-data
     driver: local
     driver_opts:
       type: none
-      device: /var/lib/openclaw/nats
+      device: /mnt/openclaw/nats
       o: bind
   minio-data:
     name: oc-minio-data
     driver: local
     driver_opts:
       type: none
-      device: /var/lib/openclaw/minio
+      device: /mnt/openclaw/minio
       o: bind
 
 services:

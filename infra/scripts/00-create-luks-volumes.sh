@@ -6,10 +6,16 @@
 # Creates 4 LUKS-on-file containers and mounts them at the paths the
 # Phase 2 docker-compose expects:
 #
-#   /var/lib/openclaw/luks/vault.img    →  /var/lib/openclaw/vault    (8 GiB)
-#   /var/lib/openclaw/luks/immudb.img   →  /var/lib/openclaw/immudb   (50 GiB)
-#   /var/lib/openclaw/luks/nats.img     →  /var/lib/openclaw/nats     (20 GiB)
-#   /var/lib/openclaw/luks/minio.img    →  /var/lib/openclaw/minio    (50 GiB)
+#   /var/lib/openclaw/luks/vault.img    →  /mnt/openclaw/vault    (8 GiB)
+#   /var/lib/openclaw/luks/immudb.img   →  /mnt/openclaw/immudb   (50 GiB)
+#   /var/lib/openclaw/luks/nats.img     →  /mnt/openclaw/nats     (20 GiB)
+#   /var/lib/openclaw/luks/minio.img    →  /mnt/openclaw/minio    (50 GiB)
+#
+# Why /mnt and not /var/lib: snap-installed Docker is confined and cannot
+# see /var/lib/. It can see /mnt (via the docker:removable-media plug,
+# connected by default). The LUKS image files themselves stay under
+# /var/lib/openclaw/luks/ because Docker never touches those — only the
+# mounted, unlocked filesystem paths.
 #
 # Idempotent: a volume that's already mounted is skipped.
 # Single passphrase used for all 4 volumes during bootstrap. You can
@@ -28,7 +34,7 @@ set -euo pipefail
 # Config (override via env)
 # ───────────────────────────────────────────────────────────────────
 LUKS_DIR="${LUKS_DIR:-/var/lib/openclaw/luks}"
-MOUNT_BASE="${MOUNT_BASE:-/var/lib/openclaw}"
+MOUNT_BASE="${MOUNT_BASE:-/mnt/openclaw}"
 
 # Volume name → size (GiB). Order matters for output readability.
 declare -A SIZES=(
@@ -162,7 +168,7 @@ oc-vault-luks   /var/lib/openclaw/luks/vault.img   none   luks,discard
 # (prompts for the passphrase at boot)
 
 # /etc/fstab
-/dev/mapper/oc-vault-luks   /var/lib/openclaw/vault   ext4   defaults,noexec,nosuid,nodev   0   2
+/dev/mapper/oc-vault-luks   /mnt/openclaw/vault   ext4   defaults,noexec,nosuid,nodev   0   2
 EOF
   log ""
   log "Repeat for immudb / nats / minio."

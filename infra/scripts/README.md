@@ -13,6 +13,12 @@ Scripts are **not** invoked automatically. They are interactive (passphrases, Sh
 | 02 | `02-init-vault.sh` | 1.3 part 1 | One-time `vault operator init -key-shares=5 -key-threshold=3` ceremony |
 | 03 | `03-unseal-vault.sh` | 1.3 part 2 | Interactive 3-share unseal (also used on every reboot) |
 
+One-time migration script (only needed if you ran `00-create-luks-volumes.sh` before the `/mnt`-paths fix):
+
+| Script | Purpose |
+|---|---|
+| `migrate-mount-paths-to-mnt.sh` | Unmount volumes from `/var/lib/openclaw/<svc>` and remount at `/mnt/openclaw/<svc>`. LUKS images stay where they are; no data loss. Run once, then remove. |
+
 Future scripts (PR #4):
 - `04-vault-bootstrap.sh` — Phase 1 tasks 1.4 (audit log) + 1.5 (secret engines) + 1.6 (admin AppRole + destroy root token)
 - `05-issue-internal-ca.sh` — Phase 1 task 1.7
