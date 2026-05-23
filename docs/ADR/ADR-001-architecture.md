@@ -166,15 +166,46 @@ Workable for raw retention, but Object Lock doesn't give us per-entry cryptograp
 
 ---
 
-## Open questions (to resolve before ADR-002 / ADR-003 land)
+## Resolved decisions (2026-05-23)
 
-1. Vault auto-unseal — Tang server on what hardware? Repurpose existing Pi, or buy new?
-2. Public attestation log — separate GitHub org? Personal account? IPFS pin?
-3. License for the openclaw repo itself — AGPL? MIT? Source-available with a non-compete?
-4. Cloudflare Tunnel vs. direct expose with WAF — Tunnel is recommended (hides origin IP) but adds a dependency on Cloudflare.
+The four open questions raised in the initial draft are resolved as follows. Each resolution is reflected in the body of this ADR and, where relevant, in `THREAT_MODEL.md` and `PLAN.md`.
+
+### R1. Vault unseal — manual Shamir-only, no Tang.
+
+3-of-5 Shamir shares held on durable, geographically separated media. Recommended layout: 1× metal seed plate (Cryptosteel/Trezor Steel/Coldcard) in a fireproof safe; 2× paper backups in separate physical locations; remaining 2 shares discretionary (encrypted USB acceptable but not as a primary, given NAND degradation and silent-clone risk). Reboot requires hands-on unseal.
+
+**Rationale.** Co-locating Tang with Vault on the same host defeats the T4 (root-on-box) mitigation: an attacker who roots the host reads Tang's binding and auto-unseals Vault, so the auto-unseal stops contributing security and becomes a convenience feature impersonating one. Shamir-only is the honest choice for a single-server deployment. A separate Tang machine can be revisited in a future ADR if the operator acquires hardware on a different network segment.
+
+### R2. Public attestation log — separate public GitHub repo `rky-2023/openclaw-attestations`.
+
+Only the daily Merkle root (a few hundred bytes) is published. Full immudb payloads stay local; immudb remains the source of truth for the audit ledger. The attestation push is performed by `openclaw-bot` with a credential scope limited to the attestations repo (separate installation, separate App permission grant from the main `oc-ash` install).
+
+**Rationale.** External witness is the entire point of attestation: a local "attestation" file can be rewritten by the same attacker who rewrites immudb, so it witnesses nothing. A separate repo (rather than a branch on `oc-ash`) gives credential-scope isolation: compromise of the main bot install does not let an attacker also rewrite the attestation history.
+
+### R3. License — MIT.
+
+Already in place from GitHub's auto-init.
+
+### R4. Network edge — Tailscale now, Cloudflare Tunnel deferred.
+
+Tailscale provides the mesh between rky's devices and the server, including the Android device. Tailscale ACLs gate per-device access. The Cloudflare Tunnel decision is **deferred** to a future ADR (a separate "ADR-00N: public ingress") rather than locked in this one.
+
+**Until Cloudflare Tunnel lands, GitHub-webhook ingestion is deferred** — Phase 3's webhook receiver is not built. The interim path is GitHub *polling* via the `openclaw-bot` App (~30–60 s latency). This keeps the public attack surface at exactly zero (no public-reachable openclaw service of any kind). FCM also rides Google's network and does not require a public openclaw endpoint.
+
+**Rationale.** A single-user, hardware-key-gated system has no need for public ingress beyond the one webhook source. Deferring that one source until a properly trusted edge exists is cheaper than building a temporary public path we'd then retire. Tailscale Funnel was considered and rejected — it would add Tailscale itself to the trusted public-ingress path before that decision is fully thought through.
+
+---
+
+## Open questions (still pending)
+
+- Android app distribution: sideload-only vs. a private Play track.
+- Future ADR on public ingress (Cloudflare Tunnel vs. alternative) — required before Phase 3's GitHub-webhook receiver can be built.
+- ADR-002 (auth: WebAuthn + YubiKey + mTLS + JWT lifecycle) — not yet drafted.
+- ADR-003 (audit: immudb topology, redaction pipeline, attestation publishing cadence) — not yet drafted.
 
 ---
 
 ## Change log
 
-- **2026-05-23** — Accepted as drafted.
+- **2026-05-23 (v1)** — Accepted as drafted.
+- **2026-05-23 (v1.1)** — Four open questions resolved: Shamir-only unseal (no Tang), separate-repo attestation log, MIT license confirmed, Tailscale-now-Cloudflare-later with webhook ingestion deferred. Body and PLAN.md updated to match.

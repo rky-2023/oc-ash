@@ -133,7 +133,7 @@ A self-hosted personal agent fabric on `/home/asher` that:
 
 **Components.**
 
-- **Vault** (single-node, auto-unseal via Tang server on a separate Pi; recovery shamir 3-of-5 written to paper and stored in physical safe).
+- **Vault** (single-node, **manual Shamir-only unseal** — no Tang. 3-of-5 shares held on durable, geographically separated media: 1× metal seed plate (Cryptosteel/Trezor Steel) + 2× paper in separate locations + 2× discretionary (encrypted USB acceptable as secondary). Reboot is hands-on by design — see ADR-001 R1 for rationale.).
 - **WebAuthn + YubiKey FIDO2** for login. Two YubiKeys enrolled (primary + spare in safe). No TOTP, no SMS, no email recovery.
 - **mTLS** between every internal service. Internal CA in Vault; certs auto-renew every 24h via `vault-agent`.
 - **Short-lived service tokens.** Each MCP server gets a 15-minute JWT minted by core, signed by Vault transit. No long-lived API keys baked in containers.
@@ -141,7 +141,7 @@ A self-hosted personal agent fabric on `/home/asher` that:
 
 **Concrete tasks.**
 
-1. Install Vault + Tang/Clevis; verify auto-unseal across reboot.
+1. Install Vault; initialize with 3-of-5 Shamir; distribute shares to durable media (metal plate + paper + optional encrypted USB) across ≥3 sites; rehearse a cold unseal from those shares.
 2. Bootstrap internal CA, issue first server cert.
 3. WebAuthn registration flow (FastAPI + `webauthn` lib); enroll both YubiKeys.
 4. Login flow: passkey → 5-minute access JWT + 24-hour refresh, refresh requires YubiKey touch.
@@ -203,7 +203,7 @@ A self-hosted personal agent fabric on `/home/asher` that:
 
 - **inotify watcher** (`ingest/fswatch/`) — Rust binary using `notify` crate. Watches `/home/asher/` recursively with an allowlist (skip `.git/objects`, `node_modules`, `__pycache__`, `*.pyc`, etc.). Coalesces bursts (1s debounce per path). Emits `oc.event.fs.<repo>.<kind>`.
 - **git hooks** — installed into every repo under `/home/asher/*` via a shared `core.hooksPath` pointing at `ingest/githooks/`. Hooks: `post-commit`, `post-merge`, `post-checkout`, `post-rewrite`, `pre-push`. Each posts a signed payload to core over Unix socket.
-- **GitHub webhook receiver** (`ingest/gh-webhook/`) — only public-facing component; behind Caddy with HMAC validation, IP allowlist of GitHub's hook IPs, and per-repo secret rotated weekly via Vault.
+- **GitHub events** — **deferred until a public-ingress ADR lands** (see ADR-001 R4). Interim path: **polling** via the `openclaw-bot` GitHub App with a 30–60 s cadence; same `oc.event.gh.>` subjects on the bus, so downstream consumers don't care. The `ingest/gh-webhook/` design (Caddy + HMAC + IP allowlist + Vault-rotated secret) is preserved on paper for when public ingress is wired up.
 - **Claude Code hooks** — settings.json hooks (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `Notification`) all `curl` a Unix socket on core. Payload includes `session_id`, `cwd`, tool name, args/results.
 
 **Concrete tasks.**
@@ -403,8 +403,8 @@ So the system is genuinely open to future change:
 1. Buy 2× YubiKey 5C NFC + paper safe storage for shamir shares.
 2. Create Google Cloud project + OAuth client (Calendar + Gmail scopes).
 3. Create GitHub App "openclaw-bot" + install on relevant repos.
-4. Domain name + DNS pointed at the home IP (or use Cloudflare Tunnel — recommended; keeps origin IP hidden).
-5. (Optional) Tang server on a Raspberry Pi on a different network segment for Vault auto-unseal.
+4. Domain name + public DNS — **deferred** until the public-ingress ADR lands. Internal addressing uses Tailscale MagicDNS in the interim.
+5. Tailscale account + ACL set up; enroll the server, rky's laptop, and the Android device on the tailnet. (Cloudflare Tunnel deferred to a later ADR.)
 
 ---
 
@@ -422,13 +422,21 @@ Phase 0 → Phase 1, no skipping. Most security postures fail because identity i
 
 ## Open questions / next decisions
 
-- DNS / domain choice (and whether to use Cloudflare Tunnel vs. direct expose with WAF).
-- Tang server hardware — repurpose an existing Pi or buy new.
-- Whether to host the public attestation log on a personal GitHub or a separate identity.
+Resolved on 2026-05-23 (see ADR-001 R1–R4):
+
+- ~~DNS / domain choice~~ → public ingress **deferred**; Tailscale + MagicDNS in the interim.
+- ~~Tang server hardware~~ → **no Tang**; manual Shamir-only unseal across metal plate + paper + optional encrypted USB across ≥3 sites.
+- ~~Attestation log host~~ → separate public repo **`rky-2023/openclaw-attestations`**, pushed by `openclaw-bot` with a credential scope limited to that repo.
+
+Still open:
+
 - Android app distribution: sideload-only vs. private Play track.
+- Future ADR on public ingress (Cloudflare Tunnel vs. alternative) — required before Phase 3's GitHub-webhook receiver can be built.
+- ADR-002 (auth) and ADR-003 (audit) — not yet drafted.
 
 ---
 
 ## Change log
 
-- **2026-05-23** — v1 draft authored.
+- **2026-05-23 (v1)** — Draft authored.
+- **2026-05-23 (v1.1)** — Four open questions resolved via ADR-001 R1–R4: Shamir-only Vault unseal (Phase 1 Vault description + concrete tasks); separate-repo attestation log (`rky-2023/openclaw-attestations`); MIT license confirmed; Tailscale-now-Cloudflare-later, with Phase 3 GitHub-webhook ingestion deferred and polling in the interim. Out-of-band actions and open-questions sections rewritten to match.

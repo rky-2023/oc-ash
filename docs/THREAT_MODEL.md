@@ -112,6 +112,8 @@ STRIDE = **S**poofing · **T**ampering · **R**epudiation · **I**nformation dis
 | D | GitHub burst on a popular repo | NATS backpressure; ingester drops events past 1000/s with audit-counter increment |
 | E | fswatch reading files it shouldn't | Runs as `oc-fswatch` user; only `/home/asher` mount visible; no exec capabilities |
 
+> **Note (2026-05-23):** Per ADR-001 R4, GitHub-webhook ingestion is **deferred** until a public ingress ADR lands. The interim path is **polling** via the `openclaw-bot` GitHub App. While polling is in effect, the "Tampered GitHub webhook payload" and "GitHub burst" rows are not in scope — the relevant mitigations (HMAC, rate limits) will return when the webhook receiver is built.
+
 ### 3.6 Notifier FCM bridge → Android app
 
 | Threat | Vector | Mitigation |
@@ -127,7 +129,7 @@ STRIDE = **S**poofing · **T**ampering · **R**epudiation · **I**nformation dis
 
 | Threat | Vector | Mitigation |
 |---|---|---|
-| S | Forged unseal | Auto-unseal via Tang server on separate network segment; manual unseal requires 3-of-5 Shamir from paper safe |
+| S | Forged unseal | **Manual Shamir-only unseal**, no Tang. 3-of-5 shares held on durable media (metal seed plate + paper backups) in geographically separated locations. Reboot is hands-on by design. Rationale captured in ADR-001 R1: co-locating Tang with Vault defeats T4. |
 | T | Tampered backend | Integrated storage (Raft) on dm-crypt volume; consensus checks per write |
 | R | "Vault gave out a secret I didn't ask for" | Audit device logs every operation; mirrored to immudb |
 | I | Backup leaks secrets | Backups age-encrypted with key on YubiKey; B2 bucket access scoped to write-only credential |
@@ -207,3 +209,4 @@ Assumption 7 is the weakest one. The architecture accepts that compromise of an 
 ## 7. Change log
 
 - **2026-05-23** — v1 draft authored alongside scaffolding.
+- **2026-05-23 (v1.1)** — Vault unseal row in §3.7 updated to Shamir-only (per ADR-001 R1). §3.5 annotated with webhook-deferral note (per ADR-001 R4).
