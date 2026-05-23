@@ -26,7 +26,13 @@ If any box is unchecked, fix it in Phase 1 before starting Phase 2.
 
 ## Phase 2 task list
 
-### 2.1 Provision the Postgres schema for openclaw
+### 2.1 Provision the Postgres schema for openclaw  ✅ executed 2026-05-23
+
+**Script:** [`infra/scripts/06-apply-postgres-schema.sh`](../../infra/scripts/06-apply-postgres-schema.sh)
+**Schema:** [`infra/postgres/openclaw-schema.sql`](../../infra/postgres/openclaw-schema.sql)
+
+The script auto-detects whichever Postgres is running on the host (docker container OR system service — connects via `sudo -u postgres psql` for the latter). For this deployment it found the system Postgres 18 from `postgresql@18-main.service` on port 5432 (Ashboard's docker postgres couldn't bind because the system one already had the port). Applied DDL + rotated `openclaw_app` password into `kv/openclaw/postgres/app`. Final state: schema `openclaw`, role `openclaw_app`, table `openclaw.lookup` with 9 seed rows.
+
 
 **Why:** The audit projection (ADR-003 D5) and a few core tables (sessions, WebAuthn credentials, AppRole bindings) need a Postgres home. Sharing the Ashboard instance is intentional (ADR-001 D1) but separation at the schema level is required.
 
@@ -84,7 +90,18 @@ If you bootstrapped before the snap-Docker mount-path fix and your volumes are a
 
 ---
 
-### 2.3 Install and run immudb
+### 2.3 Install and run immudb  ✅ executed 2026-05-23
+
+**Script:** [`infra/scripts/07-immudb-bootstrap.sh`](../../infra/scripts/07-immudb-bootstrap.sh)
+
+The script (post-fixes) is `expect`-driven because the codenotary/immudb image is **distroless** (no `/bin/sh`, no `chown`, no coreutils) AND `immuadmin login` accepts passwords only via interactive TTY prompt (no `--password` flag, no env var). Pre-chown of `/mnt/openclaw/immudb` to uid 3322 happens on the host before container start. Forced first-login password change handled inline. Final state: database `openclaw_audit`, users `appender` (`readwrite`) + `projector` (`read`), all 3 passwords in `kv/openclaw/immudb/{admin,appender,projector}`.
+
+**Gotchas hit + recorded in the script:**
+- snap-Docker has its own `/tmp` namespace — `docker cp` from host `/tmp` failed
+- distroless image: no `sh` for `sh -c` wrappers, no `chown` for permission fixes
+- `immuadmin` prompt: `read` not `readonly` for the readonly permission name
+- `vault kv put PATH -` doesn't mean stdin (needs `@-` + JSON); we use direct args
+
 
 **Why:** The WORM audit ledger (ADR-003 D1).
 
@@ -104,7 +121,15 @@ If you bootstrapped before the snap-Docker mount-path fix and your volumes are a
 
 ---
 
-### 2.4 Install and run NATS JetStream
+### 2.4 Install and run NATS JetStream  ✅ executed 2026-05-23
+
+**Script:** [`infra/scripts/08-nats-bootstrap.sh`](../../infra/scripts/08-nats-bootstrap.sh)
+**Stream config:** [`infra/nats/streams.yaml`](../../infra/nats/streams.yaml)
+
+Pre-chown of `/mnt/openclaw/nats` to uid 1000. NATS server image is also minimal — no `nats` client CLI, no shell. Stream creation uses the **`natsio/nats-box`** companion image (which has the `nats` CLI) running on the same docker network. Readiness probe via `docker inspect` (not shell). Final state: 5 streams created — OC_EVENT (7d), OC_A2A (30d), OC_MCP (30d), OC_NOTIFY (7d), OC_HEALTH (1h).
+
+**JWT operator auth deferred** — the NATS container is internal-network-only via the `oc-internal` docker network. Acceptable v1; Phase 11 hardening adds operator JWTs.
+
 
 **Why:** The bus (ADR-001 D3). Every `oc.*` message flows here first.
 
@@ -450,3 +475,9 @@ To avoid scope creep, Phase 2 stops short of:
 - **2026-05-23 (v1.1)** — Task 2.1 extended to create the `openclaw.lookup` table (per ADR-002 D12, the Postgres counterpart to Vault for low-value config). Seed values referenced by Phase 1 task 1.5 populated here.
 - **2026-05-23 (v1.2)** — Mount paths in tasks 2.2 / 2.3 / 2.4 updated from `/var/lib/openclaw/<svc>` to `/mnt/openclaw/<svc>` (snap-Docker confinement; LUKS images remain at `/var/lib/openclaw/luks/`). Task 2.2 reframed: dm-crypt setup is now done by Phase 1 task 1.1's script which covers all 4 services at once.
 - **2026-05-23 (v1.3)** — Tasks 2.1 / 2.3 / 2.4 backed by `infra/scripts/06-apply-postgres-schema.sh` / `07-immudb-bootstrap.sh` / `08-nats-bootstrap.sh`. Schema DDL at `infra/postgres/openclaw-schema.sql`; NATS streams declaratively in `infra/nats/streams.yaml`. All three idempotent. All passwords random + stored in Vault `kv/openclaw/{postgres,immudb}/*`.
+- **2026-05-23 (v1.4)** — Tasks 2.1 / 2.3 / 2.4 executed end-to-end. Several non-trivial fixes shipped to the scripts along the way:
+  - 06: support system Postgres (`sudo -u postgres psql`) in addition to docker — the operator's system pg 18 holds port 5432.
+  - 07: expect-driven immuadmin invocations (no flag/env, distroless image). Pre-chown bind target. Permission name `read` not `readonly`. Removed all `sh -c` wrappers.
+  - 08: switched from `docker exec oc-nats nats stream add` (no CLI in server image) to `docker run --rm --network=oc-internal natsio/nats-box nats stream add`.
+  - New helper `upload-immudb-creds-to-vault.sh` for when 07 runs without Vault wiring (e.g., from a Bash tool with no AppRole creds).
+  - 8 small fix commits in the PR document each gotcha for future bootstraps.
