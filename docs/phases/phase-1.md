@@ -124,84 +124,72 @@ Each task is independently completable and verifiable. Tasks marked **[hands-on]
 
 ---
 
-### 1.4 Audit logging on
+### 1.4 / 1.5 / 1.6 — Audit log, secret engines, admin AppRole, destroy root token
 
-**Why:** Vault's own audit log lives outside immudb (which doesn't exist yet) but must exist before any other operations so we have a record of the bootstrap.
+These three tasks are bundled into a single ceremony because the safer order — *enable audit before any other config, define all secret paths before any service runs, and destroy the root token only after the admin AppRole exists* — is awkward to break across multiple invocations.
 
-**Steps:**
-- `vault audit enable file file_path=/var/log/openclaw/vault-audit.log`
-- Set `mode=0600`, owned by the `vault` user.
-- Rotate via `logrotate` daily, retain 30 days locally; later (Phase 11) shipped to Loki + mirrored into immudb.
+**Script:** [`infra/scripts/04-vault-bootstrap.sh`](../../infra/scripts/04-vault-bootstrap.sh) — idempotent up until the final destroy step (which is gated by typing `DESTROY`).
 
-**Verify:** Tail the file and run `vault token lookup`; the lookup operation must appear in the audit log within a second.
+**What it does:**
 
----
+| Step | What |
+|---|---|
+| Pre-flight | Verifies oc-vault is running, initialized, and unsealed. Prompts for the root token (hidden input) and verifies it. |
+| 1.4 Audit log | Enables file audit device writing to `/vault/data/audit/file-audit.log` (inside the dm-crypt-backed volume). |
+| 1.5 KV-v2 | Mounts `kv-v2` at `kv/` (high-value secrets only — public-by-design config goes to Postgres `openclaw.lookup` per ADR-002 D12). |
+| 1.5 PKI root | Mounts `pki_root/` (10y) and generates the internal root CA (Ed25519). |
+| 1.5 PKI intermediate | Mounts `pki_int/` (1y per ADR-002 D14), generates an intermediate CSR, signs it with the root, sets the signed cert back on the intermediate. Configures `server` and `client` issuance roles (24h TTL, SPIFFE URI SAN). |
+| 1.5 Transit | Mounts `transit/` and creates Ed25519 signing keys (`core-jwt`, `audit-service`, `audit-appender`, `attestation-2026-q2`, `webauthn-admin`) and the `audit-pii-v3` AES-256-GCM key. Monthly auto-rotation for the JWT/audit signers per ADR-002 D14; manual rotation for the attestation key (quarterly) and PII key (version-pinned per envelope). |
+| 1.5 AppRole | Enables the AppRole auth method. |
+| 1.6 Admin AppRole | Writes the `openclaw-admin` policy (near-root path access), creates the AppRole with `token_ttl=15m`, `token_max_ttl=1h`, generates a fresh secret_id, and prints the role_id + secret_id to the terminal **once**. Pauses for the operator to type `CAPTURED` after storing them in the password manager. |
+| 1.6 Destroy root | After a `DESTROY` confirmation prompt, calls `vault token revoke -self` on the root token. From then on, all admin operations require the AppRole login flow. |
 
-### 1.5 Enable secret engines and define paths
-
-**Why:** Every downstream component fetches secrets from a known path. Fix the layout now.
-
-**Engines to enable:**
-
-| Path | Engine | Purpose |
-|---|---|---|
-| `kv/` | `kv-v2` | Generic key/value (e.g., OAuth refresh tokens, GitHub App key reference) |
-| `pki_root/` | `pki` | Internal CA root (long-lived) |
-| `pki_int/` | `pki` | Intermediate CA (signs leaf certs) — separate so we can rotate without re-rooting trust |
-| `transit/` | `transit` | Signing keys for service JWTs, audit envelopes, attestation roots |
-| `auth/approle/` | `auth approle` | Per-service AppRoles |
-| `auth/userpass/` | (not enabled) | We explicitly do not use password auth |
-
-Path layout convention (under `kv/`) — only **high-value** material per ADR-002 D12:
+Path layout under `kv/` after the script runs is empty (no secrets stored yet). High-value material populates as later phases land:
 
 ```
 kv/openclaw/
-  oauth/google/calendar/   { client_secret, refresh_token }
-  oauth/google/gmail/      { client_secret, refresh_token }
-  github-app/openclaw-bot/ { private_key_ref → transit }
-  fcm/                     { server_key_ref → transit }
-  webauthn/                { credential_admin_key_ref → transit }
+  oauth/google/calendar/   { client_secret, refresh_token }     (Phase 5)
+  oauth/google/gmail/      { client_secret, refresh_token }     (Phase 6)
+  github-app/openclaw-bot/ { private_key_ref → transit }        (Phase 2 task 2.12)
+  fcm/                     { server_key_ref → transit }         (Phase 8)
 ```
 
-**Low-value, public-by-design material goes in Postgres `openclaw.lookup`, NOT in Vault** (per ADR-002 D12). That includes:
-- OAuth `client_id` for google/calendar and google/gmail
-- GitHub `app_id` and `installation_ids`
-- FCM `project_id` and topic names
-- WebAuthn `rp_id`, `rp_name`
-- `redaction-policy/v3/policy_sha256` (it's a hash; not a secret)
+**Steps to run:**
 
-The Postgres lookup table is created in Phase 2 task 2.1 (it's part of the `openclaw` schema setup).
+```sh
+sudo ./infra/scripts/04-vault-bootstrap.sh
+```
 
-Each downstream service's AppRole has read access only to its own subtree under `kv/`. No service can read another service's secrets.
+You'll be prompted for:
+1. The root token (hidden).
+2. `CAPTURED` after storing the role_id + secret_id printed in the middle of the run.
+3. `DESTROY` to revoke the root token at the end.
 
-**Verify:** `vault kv list kv/openclaw/` shows the structure; an unauthenticated `curl` to `127.0.0.1:8200/v1/kv/data/openclaw/oauth/google/calendar` returns 403.
+If you abort at the `DESTROY` step, the root token survives. Earlier steps are idempotent, so you can re-run the script to retry the destroy.
 
----
+**Verify:**
 
-### 1.6 Destroy the root token
-
-**Why:** A root token is a "skip all policy" pass. Holding it after bootstrap is the most common Vault footgun. ADR-002 D11 specifies that all post-bootstrap admin happens via short-lived tokens.
-
-**Steps:**
-- Create an admin AppRole `auth/approle/role/openclaw-admin` with the `root`-equivalent policy *but* with `token_ttl=15m`, `token_max_ttl=1h`, `bind_secret_id=true`.
-- Save the `role_id` (non-secret) and a fresh `secret_id` to your password manager (NOT alongside Shamir).
-- `vault token revoke <root-token>` — destroys the bootstrap root.
-- From now on, admin operations: `vault write auth/approle/login role_id=... secret_id=...` → get a 15-minute admin token → do the thing → token expires.
-
-**Verify:** `vault token lookup <root-token>` returns `error: token not found`.
+- `docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=<old-root-token> oc-vault vault token lookup` returns `permission denied` or `token not found`.
+- AppRole login works:
+  ```sh
+  docker exec -e VAULT_ADDR=http://127.0.0.1:8200 oc-vault \
+    vault write auth/approle/login \
+      role_id=<stored-role-id> secret_id=<stored-secret-id>
+  ```
+  Returns a 15-minute admin token.
+- Audit log has entries:
+  ```sh
+  docker exec oc-vault tail -1 /vault/data/audit/file-audit.log | head -c 200
+  ```
 
 ---
 
 ### 1.7 Bootstrap the internal CA
 
-**Why:** mTLS between every service is foundational. The CA must exist before any service starts.
+**Status:** the root + intermediate CA and the server/client issuance roles are already created by **`04-vault-bootstrap.sh`** as part of the 1.4–1.6 ceremony above. This task is therefore mostly a documentation cross-reference now.
 
-**Steps:**
-- Generate a root CA in `pki_root/` with `ttl=10y`, subject CN `openclaw root CA`, **only ever used to sign the intermediate**.
-- Generate an intermediate in `pki_int/` with `ttl=1y` (rotated annually per ADR-002 D12).
-- Sign the intermediate CSR using the root.
-- Configure `pki_int/roles/server` and `pki_int/roles/client` with `max_ttl=24h`, `key_type=ed25519`, `allowed_uri_sans=spiffe://openclaw.local/*`.
-- Replace Vault's own listener cert with one issued from `pki_int/` (so Vault itself is part of its own trust chain).
+**Still to do here (manual):**
+- Replace Vault's own listener cert with one issued from `pki_int/` (so Vault itself is part of its own trust chain). The bootstrap listener was disabled-TLS to simplify init; switching it to TLS now closes the gap. Procedure script lands in a follow-up PR.
 
 **Verify:** `vault write pki_int/issue/server common_name=test.openclaw.local uri_sans=spiffe://openclaw.local/test/test` returns a cert; `openssl x509 -in <that-cert> -text -noout` shows the SPIFFE URI SAN and 24-hour notAfter.
 
@@ -414,3 +402,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 - **2026-05-23 (v1.2)** — Prerequisites restructured into "steady-state hardware" (ADR-002 D2) and "cost-free interim" (ADR-002 D13) tracks. Cost-free Shamir distribution table added with concrete locations and hard rules. Tasks 1.9/1.10 split into 1.9a/1.9b/1.10a/1.10b reflecting interim platform-authenticator path and steady-state YubiKey path.
 - **2026-05-23 (v1.3)** — Tasks 1.1, 1.2, 1.3 rewritten to reference the new `infra/scripts/` helpers (00-create-luks-volumes / 01-bring-up-vault / 02-init-vault / 03-unseal-vault). 1.1 expanded to cover all 4 dm-crypt volumes (vault + immudb + nats + minio) since Phase 2 needs them too. 1.2 reframed: Vault runs as a docker-compose container, not a host systemd unit, matching the Phase 2 scaffold.
 - **2026-05-23 (v1.4)** — Task 1.1 mount points moved from `/var/lib/openclaw/<svc>/` to `/mnt/openclaw/<svc>/` because snap-installed Docker is confined and cannot see `/var/lib/`. LUKS image files remain at `/var/lib/openclaw/luks/<svc>.img` (Docker never accesses those). Docker-compose bind-mount paths and rollback procedure 3 updated accordingly.
+- **2026-05-23 (v1.5)** — Tasks 1.4 / 1.5 / 1.6 collapsed into a single ceremony backed by `infra/scripts/04-vault-bootstrap.sh`. Script enables audit log, mounts kv-v2 + pki_root + pki_int + transit + approle, generates the internal CA hierarchy with 24h-TTL Ed25519 server/client roles, creates the named transit keys, mints the `openclaw-admin` AppRole, and (gated by typing DESTROY) revokes the root token. Task 1.7 mostly absorbed by 1.5 — only the "swap Vault's bootstrap listener to its own pki_int cert" step remains.
