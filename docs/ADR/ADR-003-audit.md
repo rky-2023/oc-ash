@@ -32,7 +32,7 @@ Three constraints frame the design:
 
 ### D1. Storage: **immudb** as the WORM audit ledger, single-node v1.
 
-- immudb runs as a container under `openclaw-core`'s docker-compose project, on a dedicated dm-crypt volume mounted at `/var/lib/openclaw/immudb/`.
+- immudb runs as a container under `openclaw-core`'s docker-compose project, on a dedicated dm-crypt volume mounted at `/mnt/openclaw/immudb/` (mount point is under `/mnt` because snap-installed Docker is confined and cannot see `/var/lib/`; the LUKS image file itself lives at `/var/lib/openclaw/luks/immudb.img`).
 - A single database (`openclaw_audit`) with a single collection-equivalent (`entries`). Per-key cryptographic verification via immudb's intrinsic Merkle tree.
 - Backups: nightly snapshot via `immuadmin database export` → MinIO (age-encrypted with a key in Vault) → weekly offsite to Backblaze B2.
 
@@ -272,3 +272,4 @@ Rejected. Couples ledger availability to request latency. NATS-first decouples t
 
 - **2026-05-23 (v1)** — Accepted as drafted.
 - **2026-05-23 (v1.1)** — D7 updated to reflect attestations repo created as private (per ADR-001 R2 amendment). D8 verification-tooling description clarified that `verify.py` is runnable by anyone with repo read access (operator + invited collaborators), not the entire internet.
+- **2026-05-23 (v1.2)** — D1 immudb mount path clarified: `/mnt/openclaw/immudb/` (snap-Docker confinement); LUKS image at `/var/lib/openclaw/luks/immudb.img`.

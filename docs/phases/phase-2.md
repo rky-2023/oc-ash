@@ -72,12 +72,15 @@ Populate the seed values referenced by Phase 1 task 1.5 here:
 **Why:** Same logic as Vault's volume — wrapped/encrypted data at rest, no clear-text bytes accessible to a host backup tool.
 
 **Steps:**
-- Allocate a partition or LUKS-on-loop file. 50 GB is comfortable; immudb will compact older data.
-- `cryptsetup luksFormat`, passphrase to your password manager.
-- Mount at `/var/lib/openclaw/immudb/` with `noexec,nosuid,nodev`.
-- `systemd` mount unit ordered before the immudb service.
 
-**Verify:** `cryptsetup status immudb-data` active; `lsblk` shows the LUKS layer.
+The dm-crypt setup is already covered by Phase 1 task 1.1 (`infra/scripts/00-create-luks-volumes.sh` creates the immudb LUKS-on-file container at the same time as Vault's). Confirm:
+
+- `mountpoint /mnt/openclaw/immudb` returns success.
+- `cryptsetup status oc-immudb-luks` shows the mapping active.
+
+If you bootstrapped before the snap-Docker mount-path fix and your volumes are at `/var/lib/openclaw/<svc>`, run `migrate-mount-paths-to-mnt.sh` first.
+
+**Verify:** `cryptsetup status oc-immudb-luks` active; `lsblk` shows the LUKS layer at `/dev/mapper/oc-immudb-luks` → ext4 → `/mnt/openclaw/immudb`.
 
 ---
 
@@ -89,7 +92,7 @@ Populate the seed values referenced by Phase 1 task 1.5 here:
 - Pull the official immudb container image. Pin to a specific digest (`@sha256:...`), not a tag, per ADR-001's supply-chain stance.
 - Compose service:
   - User: dedicated `immudb` user (uid > 10000).
-  - Mounts: `/var/lib/openclaw/immudb/` → `/var/lib/immudb`.
+  - Mounts: `/mnt/openclaw/immudb/` → `/var/lib/immudb`.
   - Network: internal docker network only; no port published to host.
   - Args: `--dir /var/lib/immudb --signingKey /run/secrets/immudb-signing.key` (immudb has native server-side state signing).
 - Bootstrap: change the default admin password immediately, store new password in `kv/openclaw/immudb/admin`.
@@ -109,7 +112,7 @@ Populate the seed values referenced by Phase 1 task 1.5 here:
 - Pull the official `nats` container image, pinned by digest.
 - Compose service:
   - User: dedicated `nats` user.
-  - Storage: `/var/lib/openclaw/nats/` (separate dm-crypt or share with immudb's volume — your call; separate is cleaner).
+  - Storage: `/mnt/openclaw/nats/` (its own dm-crypt volume from Phase 1 task 1.1).
   - JetStream enabled, file-based storage, **AES-256-GCM at rest** (`server.tls` not for client conn — internal-only — but `jetstream.encryption` on).
   - Bind to internal docker network only.
 - Operator-level credentials: NATS has its own JWT system; generate operator + account + user JWTs offline, store private keys in Vault, distribute public bits to NATS config. Future ADR-005 may unify NATS auth with Vault PKI; for v2.0 use NATS-native creds.
@@ -445,3 +448,4 @@ To avoid scope creep, Phase 2 stops short of:
 
 - **2026-05-23 (v1)** — Drafted after Phase 1 runbook. Will be revised once execution begins and real-world friction surfaces.
 - **2026-05-23 (v1.1)** — Task 2.1 extended to create the `openclaw.lookup` table (per ADR-002 D12, the Postgres counterpart to Vault for low-value config). Seed values referenced by Phase 1 task 1.5 populated here.
+- **2026-05-23 (v1.2)** — Mount paths in tasks 2.2 / 2.3 / 2.4 updated from `/var/lib/openclaw/<svc>` to `/mnt/openclaw/<svc>` (snap-Docker confinement; LUKS images remain at `/var/lib/openclaw/luks/`). Task 2.2 reframed: dm-crypt setup is now done by Phase 1 task 1.1's script which covers all 4 services at once.
