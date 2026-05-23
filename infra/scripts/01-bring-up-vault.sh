@@ -17,8 +17,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$INFRA_DIR/docker-compose.openclaw.yml"
+ENV_FILE="$INFRA_DIR/.env.openclaw"
+ENV_EXAMPLE="$INFRA_DIR/.env.openclaw.example"
 
 log()  { printf '\033[1;36m[oc-vault-up]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[oc-vault-up WARN]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[oc-vault-up ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── Pre-flight ────────────────────────────────────────────────────
@@ -26,13 +29,27 @@ die()  { printf '\033[1;31m[oc-vault-up ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 mountpoint -q /var/lib/openclaw/vault \
   || die "/var/lib/openclaw/vault is not mounted. Run 00-create-luks-volumes.sh first."
 
+# .env.openclaw is gitignored and holds bootstrap-only env values (per
+# ADR-002 D12: real production secrets come from vault-agent at runtime).
+# Auto-create from .example on first run so the operator isn't blocked,
+# but flag it so they remember to rotate the placeholders before going
+# anywhere near production.
+if [[ ! -f "$ENV_FILE" ]]; then
+  [[ -f "$ENV_EXAMPLE" ]] || die "Neither $ENV_FILE nor $ENV_EXAMPLE exists."
+  cp "$ENV_EXAMPLE" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  warn "Created $ENV_FILE from .example. The MinIO bootstrap credentials"
+  warn "inside are placeholders. Rotate them via Vault (vault-agent) before"
+  warn "treating this stack as production. See ADR-002 D12."
+fi
+
 command -v docker >/dev/null 2>&1 || die "docker not installed"
 docker compose version >/dev/null 2>&1 || die "docker compose v2 not available"
 
 # ── Bring up vault only ───────────────────────────────────────────
 log "Starting Vault container..."
 cd "$INFRA_DIR"
-docker compose -f docker-compose.openclaw.yml up -d vault
+docker compose --env-file .env.openclaw -f docker-compose.openclaw.yml up -d vault
 
 log "Waiting for Vault to become reachable..."
 for i in $(seq 1 30); do
