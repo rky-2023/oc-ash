@@ -5,7 +5,7 @@
 - **Deciders:** rky
 - **Supersedes:** —
 - **Superseded by:** —
-- **Related:** PLAN.md, docs/THREAT_MODEL.md, ADR-002 (auth — pending), ADR-003 (audit — pending)
+- **Related:** PLAN.md, docs/THREAT_MODEL.md, ADR-002 (auth), ADR-003 (audit)
 
 ---
 
@@ -200,8 +200,6 @@ Tailscale provides the mesh between rky's devices and the server, including the 
 
 - Android app distribution: sideload-only vs. a private Play track.
 - Future ADR on public ingress (Cloudflare Tunnel vs. alternative) — required before Phase 3's GitHub-webhook receiver can be built.
-- ADR-002 (auth: WebAuthn + YubiKey + mTLS + JWT lifecycle) — not yet drafted.
-- ADR-003 (audit: immudb topology, redaction pipeline, attestation publishing cadence) — not yet drafted.
 
 ---
 
@@ -209,3 +207,4 @@ Tailscale provides the mesh between rky's devices and the server, including the 
 
 - **2026-05-23 (v1)** — Accepted as drafted.
 - **2026-05-23 (v1.1)** — Four open questions resolved: Shamir-only unseal (no Tang), separate-repo attestation log, MIT license confirmed, Tailscale-now-Cloudflare-later with webhook ingestion deferred. Body and PLAN.md updated to match.
+- **2026-05-23 (v1.2)** — ADR-002 and ADR-003 drafted and Accepted; "pending" markers removed from Related and Open Questions sections.

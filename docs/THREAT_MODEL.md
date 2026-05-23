@@ -3,7 +3,7 @@
 > **Status:** Draft v1 — 2026-05-23
 > **Owner:** rky
 > **Review cadence:** quarterly, and on any new MCP server / event source / external integration.
-> **Related ADRs:** ADR-001 (architecture), ADR-002 (auth — pending), ADR-003 (audit — pending).
+> **Related ADRs:** ADR-001 (architecture), ADR-002 (auth), ADR-003 (audit).
 
 This document is the source of truth for "what is openclaw defending, against whom, and to what depth." If the code disagrees with this doc, one of them is wrong — fix it.
 
@@ -210,3 +210,4 @@ Assumption 7 is the weakest one. The architecture accepts that compromise of an 
 
 - **2026-05-23** — v1 draft authored alongside scaffolding.
 - **2026-05-23 (v1.1)** — Vault unseal row in §3.7 updated to Shamir-only (per ADR-001 R1). §3.5 annotated with webhook-deferral note (per ADR-001 R4).
+- **2026-05-23 (v1.2)** — "Related ADRs" updated to reflect ADR-002 and ADR-003 now Accepted.
