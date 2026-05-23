@@ -129,6 +129,8 @@ A self-hosted personal agent fabric on `/home/asher` that:
 
 ## Phase 1 — Secrets foundation + identity (3–4 days)
 
+> **Implementation runbook:** [`docs/phases/phase-1.md`](./docs/phases/phase-1.md) — 15-step task list, exit criteria, rollback procedures.
+
 **Goal.** No secret ever sits in an env file or git. Identity is *only* hardware-backed.
 
 **Components.**
@@ -440,3 +442,4 @@ Still open:
 
 - **2026-05-23 (v1)** — Draft authored.
 - **2026-05-23 (v1.1)** — Four open questions resolved via ADR-001 R1–R4: Shamir-only Vault unseal (Phase 1 Vault description + concrete tasks); separate-repo attestation log (`rky-2023/openclaw-attestations`); MIT license confirmed; Tailscale-now-Cloudflare-later, with Phase 3 GitHub-webhook ingestion deferred and polling in the interim. Out-of-band actions and open-questions sections rewritten to match.
+- **2026-05-23 (v1.2)** — Phase 1 implementation runbook linked at `docs/phases/phase-1.md`. Pattern: each phase will get its own runbook under `docs/phases/`.
