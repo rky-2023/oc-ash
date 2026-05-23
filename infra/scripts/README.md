@@ -13,6 +13,7 @@ Scripts are **not** invoked automatically. They are interactive (passphrases, Sh
 | 02 | `02-init-vault.sh` | 1.3 part 1 | One-time `vault operator init -key-shares=5 -key-threshold=3` ceremony |
 | 03 | `03-unseal-vault.sh` | 1.3 part 2 | Interactive 3-share unseal (also used on every reboot) |
 | 04 | `04-vault-bootstrap.sh` | 1.4 + 1.5 + 1.6 + most of 1.7 | One-time post-unseal ceremony: enables audit log, mounts kv-v2 + PKI (root + intermediate + server/client roles) + transit signing keys + AppRole auth, creates the `openclaw-admin` AppRole, then destroys the root token after the operator captures the AppRole credentials. Idempotent until the gated DESTROY step. |
+| 05 | `05-vault-tls-listener.sh` | 1.7 remainder | Issues a 30-day Vault listener cert from `pki_int/roles/vault-listener`, places it under `/vault/data/tls/`, publishes the CA cert to `/mnt/openclaw/shared/ca.crt`, restarts Vault with TLS-enabled `server.hcl`. Operator re-unseals afterwards via 03. |
 
 One-time migration script (only needed if you ran `00-create-luks-volumes.sh` before the `/mnt`-paths fix):
 
@@ -21,7 +22,6 @@ One-time migration script (only needed if you ran `00-create-luks-volumes.sh` be
 | `migrate-mount-paths-to-mnt.sh` | Unmount volumes from `/var/lib/openclaw/<svc>` and remount at `/mnt/openclaw/<svc>`. LUKS images stay where they are; no data loss. Run once, then remove. |
 
 Future scripts:
-- `05-vault-pki-tls-listener.sh` — Phase 1 task 1.7 remainder: replace Vault's bootstrap (disabled-TLS) listener with one issued from `pki_int/`.
 - `06-webauthn-rp.sh` — Phase 1 task 1.8 (stub server + relying-party config).
 
 ## Running them

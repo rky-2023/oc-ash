@@ -1,0 +1,102 @@
+# vault-agent.hcl — TEMPLATE
+# Phase 1 task 1.12 / ADR-002 D6 (mTLS via Vault PKI) / D8 (AppRole + vault-agent sidecar)
+#
+# Render per service by substituting the @@SERVICE_NAME@@ placeholders below
+# (e.g., with `sed` in the deployment helper script — see vault-agent/README.md).
+#
+# What this agent does for the service it's a sidecar to:
+#   1. Authenticates to Vault using the service's AppRole (role_id + secret_id
+#      mounted from /etc/openclaw/).
+#   2. Caches the resulting Vault token at /run/openclaw/token (consumed by
+#      the service itself for any direct Vault API use).
+#   3. Renders a 24-hour mTLS leaf cert + key for the service via pki_int/.
+#      Re-renders every 12h (well before the cert expires).
+#   4. SIGHUPs the service process so it picks up the rotated cert + key.
+
+pid_file = "/run/openclaw/vault-agent.pid"
+
+# ───────────────────────────────────────────────────────────────────
+# Where to find Vault + which CA to trust
+# ───────────────────────────────────────────────────────────────────
+vault {
+  address = "https://oc-vault:8200"
+  ca_cert = "/etc/openclaw/ca.crt"
+
+  retry {
+    num_retries = 5
+  }
+}
+
+# ───────────────────────────────────────────────────────────────────
+# AppRole auth
+# ───────────────────────────────────────────────────────────────────
+auto_auth {
+  method "approle" {
+    config = {
+      role_id_file_path                   = "/etc/openclaw/role-id"
+      secret_id_file_path                 = "/etc/openclaw/secret-id"
+      remove_secret_id_file_after_reading = false
+    }
+  }
+
+  # Cache the resulting token so the parent service can use it.
+  sink "file" {
+    config = {
+      path = "/run/openclaw/token"
+      mode = 0640
+    }
+  }
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Render an mTLS server cert + key for the service
+# ───────────────────────────────────────────────────────────────────
+template {
+  destination = "/run/openclaw/tls.crt"
+  perms       = "0644"
+  command     = "sh -c 'kill -HUP $(cat /run/openclaw/@@SERVICE_NAME@@.pid 2>/dev/null) 2>/dev/null || true'"
+  contents    = <<-EOT
+    {{- with secret "pki_int/issue/server"
+        "common_name=@@SERVICE_NAME@@.openclaw.local"
+        "alt_names=@@SERVICE_NAME@@,oc-@@SERVICE_NAME@@,localhost"
+        "ip_sans=127.0.0.1"
+        "uri_sans=spiffe://openclaw.local/@@NAMESPACE@@/@@SERVICE_NAME@@"
+        "ttl=24h" -}}
+    {{ .Data.certificate }}
+    {{ .Data.issuing_ca }}
+    {{- end }}
+  EOT
+}
+
+template {
+  destination = "/run/openclaw/tls.key"
+  perms       = "0600"
+  command     = "sh -c 'kill -HUP $(cat /run/openclaw/@@SERVICE_NAME@@.pid 2>/dev/null) 2>/dev/null || true'"
+  contents    = <<-EOT
+    {{- with secret "pki_int/issue/server"
+        "common_name=@@SERVICE_NAME@@.openclaw.local"
+        "ttl=24h" -}}
+    {{ .Data.private_key }}
+    {{- end }}
+  EOT
+}
+
+# Also publish the CA cert at a stable path for the service to use as
+# the trust anchor when verifying OTHER services it connects to.
+template {
+  destination = "/run/openclaw/ca.crt"
+  perms       = "0644"
+  contents    = <<-EOT
+    {{- with secret "pki_int/cert/ca" -}}
+    {{ .Data.certificate }}
+    {{- end }}
+  EOT
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Healthcheck-friendly listener (sidecar exposes its own /agent/health)
+# ───────────────────────────────────────────────────────────────────
+listener "tcp" {
+  address     = "127.0.0.1:8100"
+  tls_disable = true
+}

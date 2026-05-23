@@ -38,7 +38,6 @@ trap cleanup EXIT INT TERM
 # visible in /proc/<pid>/environ during the exec.
 vault_exec() {
   docker exec \
-    -e VAULT_ADDR=http://127.0.0.1:8200 \
     -e VAULT_TOKEN="$ROOT_TOKEN" \
     oc-vault vault "$@"
 }
@@ -53,8 +52,7 @@ sealed_false_re='"sealed"[[:space:]]*:[[:space:]]*false'
 docker exec oc-vault true 2>/dev/null \
   || die "oc-vault container is not running. Run ./01-bring-up-vault.sh first."
 
-STATUS_JSON=$(docker exec oc-vault vault status \
-  -address=http://127.0.0.1:8200 -format=json 2>/dev/null || true)
+STATUS_JSON=$(docker exec oc-vault vault status -format=json 2>/dev/null || true)
 
 echo "$STATUS_JSON" | grep -Eq "$init_re" \
   || die "Vault is not initialized. Run ./02-init-vault.sh first."

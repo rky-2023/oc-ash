@@ -82,8 +82,13 @@ services:
       - vault-data:/vault/data
       - ./vault/config:/vault/config:ro
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
-      VAULT_API_ADDR: "http://127.0.0.1:8200"
+      # Post-task-1.7 (TLS-enabled listener). The container's vault CLI
+      # uses VAULT_CACERT to verify the listener's cert (issued from
+      # our own pki_int). Pre-1.7 this was http://...; the upgrade is
+      # done by running infra/scripts/05-vault-tls-listener.sh once.
+      VAULT_ADDR:     "https://127.0.0.1:8200"
+      VAULT_API_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT:   "/vault/data/tls/ca.crt"
     # The hashicorp/vault entrypoint auto-injects `-config=/vault/config`
     # when the first arg is `server`. /vault/config is the directory we
     # bind-mount our config into, and Vault loads every *.hcl in it. So
@@ -94,7 +99,7 @@ services:
     # all we want.
     command: server
     healthcheck:
-      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      test: ["CMD", "vault", "status"]
       interval: 30s
       timeout: 5s
       retries: 3

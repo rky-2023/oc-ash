@@ -23,8 +23,7 @@ die()  { printf '\033[1;31m[oc-vault-init ERROR]\033[0m %s\n' "$*" >&2; exit 1; 
 docker exec oc-vault true 2>/dev/null \
   || die "oc-vault container is not running. Run ./01-bring-up-vault.sh first."
 
-INIT_STATUS=$(docker exec oc-vault vault status -address=http://127.0.0.1:8200 \
-  -format=json 2>/dev/null || true)
+INIT_STATUS=$(docker exec oc-vault vault status -format=json 2>/dev/null || true)
 
 if echo "$INIT_STATUS" | grep -q '"initialized":true'; then
   die "Vault is ALREADY INITIALIZED. Aborting to protect existing data. If you really want to start over, you must wipe /mnt/openclaw/vault first."
@@ -63,7 +62,7 @@ echo "   COPY EACH OF THE 5 UNSEAL KEYS + THE ROOT TOKEN BELOW"
 echo "════════════════════════════════════════════════════════════════"
 echo
 
-docker exec -e VAULT_ADDR=http://127.0.0.1:8200 oc-vault \
+docker exec oc-vault \
   vault operator init -key-shares=5 -key-threshold=3
 
 echo
