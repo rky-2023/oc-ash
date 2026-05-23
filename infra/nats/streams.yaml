@@ -1,0 +1,46 @@
+# NATS JetStream declarative config — Phase 2 task 2.4 + ADR-001 D3
+#
+# Five streams covering the openclaw subject taxonomy. The bootstrap
+# script (infra/scripts/08-nats-bootstrap.sh) reads this file and
+# creates / updates each stream via `nats stream add --config`.
+
+streams:
+  - name: OC_EVENT
+    subjects: ["oc.event.>"]
+    retention: limits
+    max_age:  604800       # 7 days
+    storage:  file
+    duplicate_window: 60   # seconds — dedupe for idempotent publishers
+    description: "All ingest events: fs / git / gh / claude / mail / calendar"
+
+  - name: OC_A2A
+    subjects: ["oc.a2a.>"]
+    retention: limits
+    max_age:  2592000      # 30 days
+    storage:  file
+    duplicate_window: 60
+    description: "Agent-to-agent messages (planner ↔ workers)"
+
+  - name: OC_MCP
+    subjects: ["oc.mcp.>"]
+    retention: limits
+    max_age:  2592000      # 30 days
+    storage:  file
+    duplicate_window: 60
+    description: "MCP request/response pairs (proxied through core)"
+
+  - name: OC_NOTIFY
+    subjects: ["oc.notify.>"]
+    retention: limits
+    max_age:  604800       # 7 days
+    storage:  file
+    duplicate_window: 60
+    description: "Outbound notifications (FCM / email / Telegram / etc.)"
+
+  - name: OC_HEALTH
+    subjects: ["oc.health.>"]
+    retention: limits
+    max_age:  3600         # 1 hour
+    storage:  file
+    duplicate_window: 0
+    description: "Liveness pings + paranoid-mode signal (ADR-003 D4)"

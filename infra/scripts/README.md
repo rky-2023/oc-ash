@@ -14,6 +14,9 @@ Scripts are **not** invoked automatically. They are interactive (passphrases, Sh
 | 03 | `03-unseal-vault.sh` | 1.3 part 2 | Interactive 3-share unseal (also used on every reboot) |
 | 04 | `04-vault-bootstrap.sh` | 1.4 + 1.5 + 1.6 + most of 1.7 | One-time post-unseal ceremony: enables audit log, mounts kv-v2 + PKI (root + intermediate + server/client roles) + transit signing keys + AppRole auth, creates the `openclaw-admin` AppRole, then destroys the root token after the operator captures the AppRole credentials. Idempotent until the gated DESTROY step. |
 | 05 | `05-vault-tls-listener.sh` | 1.7 remainder | Issues a 30-day Vault listener cert from `pki_int/roles/vault-listener`, places it under `/vault/data/tls/`, publishes the CA cert to `/mnt/openclaw/shared/ca.crt`, restarts Vault with TLS-enabled `server.hcl`. Operator re-unseals afterwards via 03. |
+| 06 | `06-apply-postgres-schema.sh` | 2.1 | Applies `infra/postgres/openclaw-schema.sql` to the existing Ashboard Postgres (auto-detects container name). Creates the `openclaw` schema + `openclaw_app` role + `openclaw.lookup` table with seed rows. Rotates the `openclaw_app` password and stores in Vault `kv/openclaw/postgres/app`. |
+| 07 | `07-immudb-bootstrap.sh` | 2.3 | Brings up `oc-immudb`. Rotates the default admin password, creates `openclaw_audit` database, creates `appender` (R/W) and `projector` (R-only) users. All passwords random + stored in Vault `kv/openclaw/immudb/{admin,appender,projector}`. |
+| 08 | `08-nats-bootstrap.sh` | 2.4 | Brings up `oc-nats`. Creates the five openclaw streams (OC_EVENT, OC_A2A, OC_MCP, OC_NOTIFY, OC_HEALTH) from `infra/nats/streams.yaml`. |
 
 One-time migration script (only needed if you ran `00-create-luks-volumes.sh` before the `/mnt`-paths fix):
 
@@ -22,7 +25,8 @@ One-time migration script (only needed if you ran `00-create-luks-volumes.sh` be
 | `migrate-mount-paths-to-mnt.sh` | Unmount volumes from `/var/lib/openclaw/<svc>` and remount at `/mnt/openclaw/<svc>`. LUKS images stay where they are; no data loss. Run once, then remove. |
 
 Future scripts:
-- `06-webauthn-rp.sh` — Phase 1 task 1.8 (stub server + relying-party config).
+- (Phase 1 task 1.8 ended up in `core/scripts/` rather than `infra/scripts/` because it's per-deployment, not infra-bringup.)
+- Service-specific bootstrap scripts (audit-appender, audit-projector, attestation-publisher) land alongside the services they configure in Phase 2 tasks 2.8 / 2.9 / 2.13.
 
 ## Running them
 
