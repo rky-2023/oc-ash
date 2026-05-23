@@ -141,7 +141,7 @@ STRIDE = **S**poofing · **T**ampering · **R**epudiation · **I**nformation dis
 | Threat | Vector | Mitigation |
 |---|---|---|
 | S | Forged entry appearing in ledger | All writes signed by core's service key; signature verified on read |
-| T | Silent ledger rewrite | Nightly Merkle root committed to public `openclaw-attestations` Git repo; any divergence visible globally |
+| T | Silent ledger rewrite | Nightly Merkle root committed to **private** `openclaw-attestations` Git repo (ADR-001 R2). Divergence visible to operator + invited read-only collaborators. Mitigation against silent rewrite is preserved within that audience; "globally visible" is downgraded to "witness-audience visible." |
 | R | "I never wrote that audit entry" | Writes themselves are signed by the originating service |
 | I | Audit log contains sensitive payloads | Redaction pass before append; PII fields stored as Vault-key-encrypted blobs |
 | D | Ledger fills disk | Cold-tier rotation: roots stay forever, payloads >90d move to MinIO (still verifiable) |
@@ -211,3 +211,4 @@ Assumption 7 is the weakest one. The architecture accepts that compromise of an 
 - **2026-05-23** — v1 draft authored alongside scaffolding.
 - **2026-05-23 (v1.1)** — Vault unseal row in §3.7 updated to Shamir-only (per ADR-001 R1). §3.5 annotated with webhook-deferral note (per ADR-001 R4).
 - **2026-05-23 (v1.2)** — "Related ADRs" updated to reflect ADR-002 and ADR-003 now Accepted.
+- **2026-05-23 (v1.3)** — §3.8 immudb T-row updated: attestations repo is private (per ADR-001 R2 amendment); "globally visible" → "witness-audience visible."

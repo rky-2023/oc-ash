@@ -176,11 +176,17 @@ The four open questions raised in the initial draft are resolved as follows. Eac
 
 **Rationale.** Co-locating Tang with Vault on the same host defeats the T4 (root-on-box) mitigation: an attacker who roots the host reads Tang's binding and auto-unseals Vault, so the auto-unseal stops contributing security and becomes a convenience feature impersonating one. Shamir-only is the honest choice for a single-server deployment. A separate Tang machine can be revisited in a future ADR if the operator acquires hardware on a different network segment.
 
-### R2. Public attestation log — separate public GitHub repo `rky-2023/openclaw-attestations`.
+### R2. External attestation log — separate GitHub repo `rky-2023/openclaw-attestations`, **private** (witness-by-invitation model).
 
 Only the daily Merkle root (a few hundred bytes) is published. Full immudb payloads stay local; immudb remains the source of truth for the audit ledger. The attestation push is performed by `openclaw-bot` with a credential scope limited to the attestations repo (separate installation, separate App permission grant from the main `oc-ash` install).
 
-**Rationale.** External witness is the entire point of attestation: a local "attestation" file can be rewritten by the same attacker who rewrites immudb, so it witnesses nothing. A separate repo (rather than a branch on `oc-ash`) gives credential-scope isolation: compromise of the main bot install does not let an attacker also rewrite the attestation history.
+**Visibility: private.** The repo is *not* public. This is a deliberate trade — see "Trade-off" below.
+
+**Rationale (separate-repo).** External witness is the entire point of attestation: a local "attestation" file can be rewritten by the same attacker who rewrites immudb, so it witnesses nothing. A separate repo (rather than a branch on `oc-ash`) gives credential-scope isolation: compromise of the main bot install does not let an attacker also rewrite the attestation history.
+
+**Trade-off (private vs. public).** A public repo gives the strongest witness property: *anyone on the internet* can pull and verify, so silent tampering becomes globally observable. A private repo trades that property for reduced metadata exposure — attestation file timestamps, frequency, and signing-key rotations are not visible to internet scanners. For a single-user system with no public reputation to project, the metadata-exposure reduction is more valuable than the global-witness property. The operator chose private; we document the trade rather than silently accept it.
+
+**Recovering the witness property (deferred mitigation, recommended).** Invite 1–2 trusted external accounts as **read-only collaborators** on the private attestations repo (e.g., a second account in a different geography, a trusted family member, the spare-YubiKey-safe caretaker). They become independent witnesses without making the repo public. Equivalently, run a daily cron on a separate machine that clones the private repo via deploy key and notifies the operator if today's root differs from local immudb's root. Either path restores most of the global-witness property to a small invited audience.
 
 ### R3. License — MIT.
 
@@ -208,3 +214,4 @@ Tailscale provides the mesh between rky's devices and the server, including the 
 - **2026-05-23 (v1)** — Accepted as drafted.
 - **2026-05-23 (v1.1)** — Four open questions resolved: Shamir-only unseal (no Tang), separate-repo attestation log, MIT license confirmed, Tailscale-now-Cloudflare-later with webhook ingestion deferred. Body and PLAN.md updated to match.
 - **2026-05-23 (v1.2)** — ADR-002 and ADR-003 drafted and Accepted; "pending" markers removed from Related and Open Questions sections.
+- **2026-05-23 (v1.3)** — R2 amended: attestations repo created as **private** (witness-by-invitation), not public. Trade-off and deferred-mitigation (invite external read-only witnesses or run a cron-based off-host divergence check) documented.

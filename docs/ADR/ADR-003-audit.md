@@ -127,7 +127,7 @@ Important: **redaction decisions are reversible only via the encrypt path**. If 
   1. Computes the Merkle root over the day's immudb entries (using immudb's own consistency proof primitives).
   2. Builds an attestation document.
   3. Signs the document with an attestation signing key (separate from the appender key; stored in Vault transit; key ID rotates quarterly).
-  4. Commits and pushes the document to `rky-2023/openclaw-attestations`.
+  4. Commits and pushes the document to `rky-2023/openclaw-attestations` — **a private GitHub repository** (visibility decision recorded in ADR-001 R2). The witness audience is the operator plus any explicitly invited read-only collaborators, rather than the public internet. The verification primitives below work identically regardless of repo visibility.
 
 - Attestation file layout in the public repo:
 
@@ -170,7 +170,7 @@ Important: **redaction decisions are reversible only via the encrypt path**. If 
 Two verification paths:
 
 - **Operator-side (`oc audit verify <date>`):** queries local immudb, recomputes the day's root, fetches the corresponding `attestations/YYYY/MM/DD.json` from the public repo, compares roots and signatures. Returns green/red. Designed to be run on a schedule (weekly random-day verify, see PLAN.md Phase 11).
-- **Third-party-side (`openclaw-attestations/verify/verify.py`):** a standalone Python script that walks the attestations repo and checks the Git-side hash chain (`prev_day_merkle`) + signatures. Has no openclaw dependencies, no Vault access, no immudb access. Anyone who clones the public repo can run it. This makes the tamper-evidence property externally checkable.
+- **Third-party-side (`openclaw-attestations/verify/verify.py`):** a standalone Python script that walks the attestations repo and checks the Git-side hash chain (`prev_day_merkle`) + signatures. Has no openclaw dependencies, no Vault access, no immudb access. Anyone with read access to the repo can run it (per ADR-001 R2, this is the operator plus any invited collaborators rather than the entire internet). This makes the tamper-evidence property externally checkable to the witness audience.
 
 ### D9. Retention and tiering.
 
@@ -271,3 +271,4 @@ Rejected. Couples ledger availability to request latency. NATS-first decouples t
 ## Change log
 
 - **2026-05-23 (v1)** — Accepted as drafted.
+- **2026-05-23 (v1.1)** — D7 updated to reflect attestations repo created as private (per ADR-001 R2 amendment). D8 verification-tooling description clarified that `verify.py` is runnable by anyone with repo read access (operator + invited collaborators), not the entire internet.

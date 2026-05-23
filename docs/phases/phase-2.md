@@ -40,6 +40,31 @@ If any box is unchecked, fix it in Phase 1 before starting Phase 2.
 
 **Verify:** `psql` as `openclaw_app` can `CREATE TABLE openclaw.foo (...)` and **cannot** `SELECT FROM ashboard.households`.
 
+**Also create the `openclaw.lookup` table** (per ADR-002 D12 — low-value config that doesn't belong in Vault):
+
+```sql
+CREATE TABLE openclaw.lookup (
+  key         TEXT PRIMARY KEY,            -- e.g., 'oauth.google.calendar.client_id'
+  value       JSONB NOT NULL,
+  description TEXT,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by  TEXT NOT NULL                -- 'rky' or service name; audit-relevant but not secret
+);
+
+COMMENT ON TABLE openclaw.lookup IS
+  'Public-by-design config: OAuth client IDs, GitHub App IDs, FCM project IDs, '
+  'WebAuthn RP config, redaction policy hashes. Anything NOT public goes in Vault.';
+```
+
+Populate the seed values referenced by Phase 1 task 1.5 here:
+- `oauth.google.calendar.client_id`
+- `oauth.google.gmail.client_id`
+- `github-app.openclaw-bot.app_id`
+- `github-app.openclaw-bot.installation_ids` (JSONB array)
+- `fcm.project_id`
+- `webauthn.rp_id`, `webauthn.rp_name`
+- `redaction-policy.v3.sha256`
+
 ---
 
 ### 2.2 Provision the dm-crypt volume for immudb
@@ -419,3 +444,4 @@ To avoid scope creep, Phase 2 stops short of:
 ## Change log
 
 - **2026-05-23 (v1)** — Drafted after Phase 1 runbook. Will be revised once execution begins and real-world friction surfaces.
+- **2026-05-23 (v1.1)** — Task 2.1 extended to create the `openclaw.lookup` table (per ADR-002 D12, the Postgres counterpart to Vault for low-value config). Seed values referenced by Phase 1 task 1.5 populated here.

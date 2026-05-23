@@ -84,7 +84,7 @@ ADR-001 R1 already locked Vault unseal as **manual Shamir-only**, so any "auto-r
 ### D8. Vault access from services.
 
 - Every service has its own AppRole in Vault. The role-id is baked into the image (non-secret); the secret-id is injected at runtime by an `init` container that itself authenticates with a token derived from the host's TPM (where present) or from a one-time bootstrap token (otherwise).
-- Each AppRole's policy is the **minimum** set of paths required (read on `kv/<service>/*`, possibly sign on `transit/sign/<service>`). No service has cross-namespace access.
+- Each AppRole's policy is the **minimum** set of paths required (read on `kv/<service>/*`, possibly sign on `transit/sign/<service>`). No service has cross-namespace access. See D12 for the secret-vs-config split — non-sensitive config lives in Postgres, not in Vault.
 
 ### D9. Android device pairing.
 
@@ -112,7 +112,54 @@ ADR-001 R1 already locked Vault unseal as **manual Shamir-only**, so any "auto-r
 - **YubiKey PIN forgotten:** Same as "lost" — the YubiKey itself locks out after 8 wrong PINs and cannot be reset without device wipe.
 - **Vault sealed, no Shamir available:** Total lockout. By design. This is the rubber-hose-resistance backstop: even rky cannot bypass it under coercion if the shares are geographically separated.
 
-### D12. Rotation cadence.
+### D12. Secret-vs-config split — Vault for high-value, Postgres for low-value.
+
+Not everything openclaw stores is equally sensitive. To keep Vault's operational scope minimal while preserving its strongest claims, we split material into two tiers and route them to different stores:
+
+**Vault (high-value: irreplaceable, sign-only, or just-in-time):**
+
+- **Vault transit (sign-only / decrypt-only — bytes never leave Vault):**
+  - `transit/keys/core-jwt` — service JWT signing
+  - `transit/keys/audit-service` — audit envelope `sig_service`
+  - `transit/keys/audit-appender` — audit envelope `sig_appender`
+  - `transit/keys/attestation-2026-q2` — daily Merkle root signing
+  - `transit/keys/audit-pii/v3` — PII encryption for `encrypted_blobs[]`
+  - `transit/keys/github-app-openclaw-bot` — imported RSA key, sign-only for App JWTs
+  - `transit/keys/webauthn-admin` — credential admin operations
+- **Vault PKI:**
+  - `pki_root/` and `pki_int/` — internal CA hierarchy, mTLS leaf issuance
+- **Vault KV-v2 (`kv/openclaw/...` — read just-in-time, never cached on disk):**
+  - `oauth/google/calendar/refresh_token` and `client_secret`
+  - `oauth/google/gmail/refresh_token` and `client_secret`
+  - `fcm/server-key` (or VAPID private key, depending on push protocol)
+  - `immudb/admin`, `immudb/appender`, `immudb/projector` (DB passwords)
+  - `postgres/app` (DB password for the `openclaw_app` role)
+  - `nats/operator-seed`, `nats/account-seeds` (NATS auth material)
+- **Vault auth/approle:** every service's AppRole secret_id (injected at runtime, never in image).
+
+**Postgres `openclaw.lookup` schema (low-value: public, replaceable, or already-public-by-design):**
+
+- OAuth **client IDs** (these are *meant* to be public — they identify the app, they don't authenticate it)
+- GitHub App **App ID**, **installation IDs** (public — visible in API responses)
+- FCM **project ID**, **topic names** (visible in client SDKs anyway)
+- Repository configurations (which `/home/asher/*` paths to watch, ingest filters, etc.)
+- Notification rules (DND schedules, channel preferences, severity thresholds)
+- Tailnet device labels (visible to the tailnet)
+- Cron schedules and feature flags
+- WebAuthn relying-party config (rp_id, rp_name — these are public per the WebAuthn spec)
+- Per-service config (Postgres connection pool sizes, NATS subject allowlists, log levels)
+
+**Decision rule** when a new piece of data shows up and it's ambiguous which side it belongs on, ask three questions in order:
+
+1. **Can it be used to forge identity or sign on someone's behalf?** → Vault.
+2. **Does its disclosure cause a security incident, even if a single value?** → Vault.
+3. **Is it published publicly elsewhere by design (in API responses, client SDKs, the WebAuthn spec, etc.)?** → Postgres is acceptable.
+
+If a question's answer is unclear, default to Vault. Adding a value to Vault later costs nothing; moving a leaked value out of Postgres later is impossible.
+
+**Rationale for the split.** A flat "all secrets in Vault" rule led to a fair concern from the operator: Vault feels heavy for a personal system, and Ashboard's Postgres is already running. A flat "all secrets in Postgres" rule, on the other hand, regresses every claim in this ADR — the GitHub App private key, the audit signing keys, and the OAuth refresh tokens are precisely the things Vault transit / KV is designed for, and Postgres has no equivalent of "sign without exposing." The split keeps Vault's surface tight (a dozen-ish keys + a dozen-ish KV paths) while letting boring lookup data live where it's most ergonomic.
+
+### D13. Rotation cadence.
 
 | Material | Cadence | Trigger |
 |---|---|---|
@@ -196,3 +243,4 @@ Rejected. Biometric prompts on a laptop browser are tied to the platform's biome
 ## Change log
 
 - **2026-05-23 (v1)** — Accepted as drafted.
+- **2026-05-23 (v1.1)** — Added D12 (Secret-vs-config split) per operator feedback: Vault retains all high-value material (transit signing keys, OAuth refresh tokens, DB credentials, AppRole secret_ids); Postgres `openclaw.lookup` schema holds low-value config that is public-by-design (OAuth client IDs, App IDs, FCM project IDs, repo configs, notification rules, RP config). D8 cross-references D12. Original D12 (rotation cadence) is now D13.

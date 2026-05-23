@@ -351,7 +351,7 @@ A self-hosted personal agent fabric on `/home/asher` that:
 - **Containers:** Every MCP runs under gVisor (`runsc`) with seccomp profile + read-only root + no-new-privileges + dropped capabilities.
 - **Supply chain:** All deps pinned with hashes (`pip-tools`, `npm --package-lock-only`). Renovate bot opens dep PRs which require manual review. SBOM generated per build (`syft`), signed with cosign (`sigstore`). CI rejects unsigned base images.
 - **Runtime IDS:** Falco rules tuned for the box; alerts on unexpected exec, file writes outside expected dirs, outbound connections to non-allowlisted IPs.
-- **Log integrity:** Loki + immudb. Daily Merkle root committed to a public Git repo (`openclaw-attestations`) — tampering becomes globally visible.
+- **Log integrity:** Loki + immudb. Daily Merkle root committed to a **private** Git repo (`rky-2023/openclaw-attestations`) — tampering becomes visible to the operator + invited read-only witnesses (see ADR-001 R2 for the visibility trade-off).
 - **Backups:** Restic to a B2 bucket, encrypted with age key whose private half is on a YubiKey in safe. Monthly restore test.
 - **Recovery:** Runbook for "I lost my primary YubiKey" — uses spare from safe. Runbook for "server is compromised" — wipe, restore from yesterday's backup, rotate every secret.
 - **Disclosure honesty:** A `SECURITY.md` saying explicitly what threat tiers we resist and what we do *not* claim to resist.
@@ -446,3 +446,4 @@ Still open:
 - **2026-05-23 (v1.1)** — Four open questions resolved via ADR-001 R1–R4: Shamir-only Vault unseal (Phase 1 Vault description + concrete tasks); separate-repo attestation log (`rky-2023/openclaw-attestations`); MIT license confirmed; Tailscale-now-Cloudflare-later, with Phase 3 GitHub-webhook ingestion deferred and polling in the interim. Out-of-band actions and open-questions sections rewritten to match.
 - **2026-05-23 (v1.2)** — Phase 1 implementation runbook linked at `docs/phases/phase-1.md`. Pattern: each phase will get its own runbook under `docs/phases/`.
 - **2026-05-23 (v1.3)** — Phase 2 implementation runbook linked at `docs/phases/phase-2.md`.
+- **2026-05-23 (v1.4)** — Phase 10 attestations note updated: private repo (per ADR-001 R2 amendment); ADR-002 D12 added (secret-vs-config split: Vault for high-value, Postgres `openclaw.lookup` for low-value config).

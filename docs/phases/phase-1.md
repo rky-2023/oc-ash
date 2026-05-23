@@ -114,19 +114,27 @@ Each task is independently completable and verifiable. Tasks marked **[hands-on]
 | `auth/approle/` | `auth approle` | Per-service AppRoles |
 | `auth/userpass/` | (not enabled) | We explicitly do not use password auth |
 
-Path layout convention (under `kv/`):
+Path layout convention (under `kv/`) — only **high-value** material per ADR-002 D12:
 
 ```
 kv/openclaw/
-  oauth/google/calendar/   { client_id, client_secret, refresh_token }
-  oauth/google/gmail/      { client_id, client_secret, refresh_token }
-  github-app/openclaw-bot/ { app_id, installation_ids, private_key_ref → transit }
+  oauth/google/calendar/   { client_secret, refresh_token }
+  oauth/google/gmail/      { client_secret, refresh_token }
+  github-app/openclaw-bot/ { private_key_ref → transit }
   fcm/                     { server_key_ref → transit }
-  redaction-policy/v3/     { policy_sha256 }
-  webauthn/                { rp_id, rp_name, credential_admin_key_ref → transit }
+  webauthn/                { credential_admin_key_ref → transit }
 ```
 
-Each downstream service's AppRole has read access only to its own subtree. No service can read another service's secrets.
+**Low-value, public-by-design material goes in Postgres `openclaw.lookup`, NOT in Vault** (per ADR-002 D12). That includes:
+- OAuth `client_id` for google/calendar and google/gmail
+- GitHub `app_id` and `installation_ids`
+- FCM `project_id` and topic names
+- WebAuthn `rp_id`, `rp_name`
+- `redaction-policy/v3/policy_sha256` (it's a hash; not a secret)
+
+The Postgres lookup table is created in Phase 2 task 2.1 (it's part of the `openclaw` schema setup).
+
+Each downstream service's AppRole has read access only to its own subtree under `kv/`. No service can read another service's secrets.
 
 **Verify:** `vault kv list kv/openclaw/` shows the structure; an unauthenticated `curl` to `127.0.0.1:8200/v1/kv/data/openclaw/oauth/google/calendar` returns 403.
 
@@ -331,3 +339,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 ## Change log
 
 - **2026-05-23 (v1)** — Drafted alongside ADR-002 and ADR-003 acceptance. Will be revised once execution begins and real-world friction surfaces.
+- **2026-05-23 (v1.1)** — Task 1.5 Vault path layout aligned with ADR-002 D12 (Secret-vs-config split): public-by-design lookups (client_id, app_id, installation_ids, rp_id, FCM project IDs, redaction policy hash) moved out of `kv/openclaw/` and into the Postgres `openclaw.lookup` schema (created in Phase 2 task 2.1).
