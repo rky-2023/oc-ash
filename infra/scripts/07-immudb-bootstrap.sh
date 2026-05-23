@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # Phase 2 task 2.3 — bring up immudb + create audit database + users
 # ----------------------------------------------------------------------
-# Brings up the immudb container (already declared in
+# Brings up the immudb container (declared in
 # infra/docker-compose.openclaw.yml), rotates the default admin password,
 # creates the openclaw_audit database, and creates two users:
-#   - appender  (R/W on openclaw_audit) — used by the audit-appender service
-#   - projector (R-only on openclaw_audit) — used by the audit-projector service
-# All three passwords are random + stored in Vault under
+#   - appender  (R/W on openclaw_audit)  — used by audit-appender
+#   - projector (R-only on openclaw_audit) — used by audit-projector
+# Passwords are random + stored in Vault under
 # kv/openclaw/immudb/{admin,appender,projector}.
 #
-# Idempotent: if accounts already exist, the script rotates their
-# passwords. If the database exists, no-op.
+# Important: the codenotary/immudb image is DISTROLESS — no shell, no
+# chown, no coreutils. All immuadmin invocations therefore use direct
+# `docker exec` calls, not `sh -c '...'` wrappers. Readiness is checked
+# via `docker inspect` (container State.Status + Health.Status).
 #
-# Prerequisites:
-#   - Vault unsealed; openclaw-admin AppRole credentials available
-#   - dm-crypt-backed /mnt/openclaw/immudb already mounted (from 00)
-#   - docker compose can bring services up
+# Bind-target ownership: we chown /mnt/openclaw/immudb to uid 3322
+# (the immudb user inside the container) BEFORE compose-up. This must
+# happen on the host as root because the container can't fix its own
+# filesystem ownership on a distroless image (no chown binary).
+#
+# Idempotent: re-running rotates passwords and re-applies the schema.
+# Failures terminate via `die` — no silent advance through broken state.
 
 set -euo pipefail
 
@@ -29,13 +34,7 @@ INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 mountpoint -q /mnt/openclaw/immudb || die "/mnt/openclaw/immudb not mounted. Run 00 first."
 
-# ── Chown the bind target BEFORE container start ───────────────────
-# The codenotary/immudb container runs as user immudb (uid 3322). The
-# LUKS-mount target is root:root mode 700 by default — immudb can't
-# write there and exits 2 right after its startup banner.
-# This step must happen on the HOST as root, BEFORE `compose up`,
-# because by the time the container is up we'd be trying to fix
-# things from inside a crash-looping process.
+# ── Chown the bind target BEFORE container start ────────────────────
 log "Setting /mnt/openclaw/immudb ownership to immudb uid (3322:3322, mode 700)"
 chown -R 3322:3322 /mnt/openclaw/immudb
 chmod 700 /mnt/openclaw/immudb
@@ -47,21 +46,26 @@ if ! docker ps --format '{{.Names}}' | grep -qx oc-immudb; then
     -f "$INFRA_DIR/docker-compose.openclaw.yml" up -d immudb
 fi
 
-# Wait for the gRPC listener on 3322 to actually accept connections.
-# Listening != restarting; we check via `nc` or a real client probe.
-log "Waiting for immudb gRPC listener at :3322 to accept connections..."
+# ── Wait for the container to be healthy ────────────────────────────
+# Distroless image — can't shell-out a TCP probe. We use docker inspect:
+# Status=="running" AND (Health.Status=="healthy" OR no healthcheck).
+log "Waiting for oc-immudb to be running + healthy..."
 ready=false
-for i in $(seq 1 30); do
-  # If the container is currently in a restart loop, docker exec returns
-  # an error — treat that as "not yet ready" and keep waiting.
-  if docker exec oc-immudb sh -c 'echo > /dev/tcp/127.0.0.1/3322' 2>/dev/null; then
+for i in $(seq 1 60); do
+  state=$(docker inspect oc-immudb --format '{{.State.Status}}' 2>/dev/null || echo missing)
+  if [[ "$state" != "running" ]]; then
+    sleep 1; continue
+  fi
+  # Healthcheck may not have run yet; tolerate missing field
+  health=$(docker inspect oc-immudb --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || echo none)
+  if [[ "$health" == "healthy" || "$health" == "none" ]]; then
     ready=true
     break
   fi
   sleep 1
 done
-$ready || die "immudb didn't open port 3322 in 30s — check 'docker logs oc-immudb'."
-log "immudb is listening."
+$ready || die "immudb didn't reach a healthy state in 60s — check 'docker logs oc-immudb'."
+log "immudb is ready."
 
 # ── AppRole login to Vault ──────────────────────────────────────────
 echo
@@ -77,36 +81,35 @@ unset SECRET_ID
 log "Vault AppRole login OK."
 
 vault_exec() { docker exec -e VAULT_TOKEN="$ADMIN_TOKEN" oc-vault vault "$@"; }
+vault_kv_put() { vault_exec kv put "$1" "$2=$3" >/dev/null; }
+vault_kv_get() { vault_exec kv get -field="$2" "$1" 2>/dev/null || true; }
 
-# Helper: store a secret in Vault kv-v2
-vault_kv_put() {
-  local path="$1" key="$2" val="$3"
-  vault_exec kv put "$path" "$key=$val" >/dev/null
-}
-
-# Helper: get current admin password from Vault if previously rotated
-get_kv() {
-  vault_exec kv get -field="$2" "$1" 2>/dev/null || echo ""
-}
-
-# ── Determine current immudb admin password ─────────────────────────
-# First run: default is immudb/immudb. Subsequent: Vault has the rotated one.
-CUR_ADMIN_PW=$(get_kv kv/openclaw/immudb/admin password)
+# ── Determine current admin password ────────────────────────────────
+CUR_ADMIN_PW=$(vault_kv_get kv/openclaw/immudb/admin password)
 if [[ -z "$CUR_ADMIN_PW" ]]; then
   CUR_ADMIN_PW="immudb"
-  log "Using default admin/immudb password (first run)"
+  log "No admin password in Vault — assuming default ('immudb', first run)"
 else
-  log "Using current admin password from Vault"
+  log "Loaded current admin password from Vault."
 fi
 
-# ── Login as immudb admin ───────────────────────────────────────────
-# immuadmin needs an interactive password prompt; pipe via heredoc.
-immu_admin() {
-  docker exec -i oc-immudb sh -c "
-    echo '$CUR_ADMIN_PW' | immuadmin login immudb 2>&1 | tail -1
-    $1
-  " 2>&1
+# ── Helpers that talk directly to immuadmin (no sh in image) ────────
+# Pipe stdin via `docker exec -i`. immuadmin's login persists a token
+# in /home/immudb/.immudb/token (inside the container) so subsequent
+# exec calls reuse the session.
+immuadmin() {
+  docker exec -i oc-immudb immuadmin "$@"
 }
+
+immuadmin_login() {
+  local pw="$1"
+  printf '%s\n' "$pw" | immuadmin login immudb >/dev/null
+}
+
+# ── Login as admin (verify CUR_ADMIN_PW is correct) ─────────────────
+log "Logging in as admin (verifying current password)"
+immuadmin_login "$CUR_ADMIN_PW" \
+  || die "Admin login failed with password from Vault. If you're certain you have the right one in Vault, the actual immudb password may have drifted (e.g., from a partial earlier run). Wipe /mnt/openclaw/immudb and the kv/openclaw/immudb/* Vault entries, then re-run."
 
 # ── Generate new passwords ──────────────────────────────────────────
 gen_pw() { openssl rand -base64 32 | tr -d '\n' | tr '/+' '_-'; }
@@ -116,66 +119,50 @@ PROJECTOR_PW=$(gen_pw)
 
 # ── Rotate admin password ───────────────────────────────────────────
 log "Rotating admin password"
-docker exec -i oc-immudb sh -c "
-  immuadmin login immudb <<< '$CUR_ADMIN_PW' >/dev/null 2>&1
-  immuadmin user changepassword immudb <<EOF >/dev/null 2>&1
-$CUR_ADMIN_PW
-$NEW_ADMIN_PW
-$NEW_ADMIN_PW
-EOF
-" || warn "Admin password rotation may have already happened — proceeding with $NEW_ADMIN_PW"
-
+# `immuadmin user changepassword <user>` prompts for: old, new, new-confirm
+printf '%s\n%s\n%s\n' "$CUR_ADMIN_PW" "$NEW_ADMIN_PW" "$NEW_ADMIN_PW" \
+  | immuadmin user changepassword immudb >/dev/null \
+  || die "Admin password change failed. Old password possibly wrong; check Vault state vs. immudb state."
 vault_kv_put kv/openclaw/immudb/admin password "$NEW_ADMIN_PW"
 log "  ✓ admin password rotated + stored in Vault"
 
-# ── Create openclaw_audit database ──────────────────────────────────
-log "Creating database 'openclaw_audit' (if not exists)"
-docker exec -i oc-immudb sh -c "
-  immuadmin login immudb <<< '$NEW_ADMIN_PW' >/dev/null 2>&1
-  immuadmin database list 2>/dev/null | grep -q openclaw_audit \
-    || immuadmin database create openclaw_audit >/dev/null
-" || die "database creation failed — check immudb logs"
-log "  ✓ database openclaw_audit ready"
+# Re-login with new password so subsequent commands use a fresh session.
+immuadmin_login "$NEW_ADMIN_PW"
 
-# ── Create appender user (R/W) ──────────────────────────────────────
-log "Creating user 'appender' (RW on openclaw_audit)"
-docker exec -i oc-immudb sh -c "
-  immuadmin login immudb <<< '$NEW_ADMIN_PW' >/dev/null 2>&1
-  immuadmin user create appender readwrite openclaw_audit <<EOF >/dev/null 2>&1
-$APPENDER_PW
-$APPENDER_PW
-EOF
-" || {
-  log "  user 'appender' may already exist — rotating password"
-  docker exec -i oc-immudb sh -c "
-    immuadmin login immudb <<< '$NEW_ADMIN_PW' >/dev/null 2>&1
-    immuadmin user changepassword appender <<EOF >/dev/null 2>&1
-$APPENDER_PW
-$APPENDER_PW
-EOF
-  " || die "Could not rotate appender password — Vault value would be stale; aborting."
+# ── Create openclaw_audit database (idempotent) ─────────────────────
+log "Ensuring database 'openclaw_audit' exists"
+if immuadmin database list 2>/dev/null | grep -q '\bopenclaw_audit\b'; then
+  log "  database openclaw_audit already exists"
+else
+  immuadmin database create openclaw_audit >/dev/null \
+    || die "Failed to create database openclaw_audit"
+  log "  ✓ database openclaw_audit created"
+fi
+
+# ── Helper: create-or-rotate user ───────────────────────────────────
+# `immuadmin user list` lists users including 'immudb', 'appender', 'projector'.
+ensure_user() {
+  local user="$1" perm="$2" pw="$3"
+  if immuadmin user list 2>/dev/null | grep -q "\b$user\b"; then
+    log "  user '$user' exists — rotating password"
+    # `immuadmin user changepassword <user>` as admin: prompts for new + confirm.
+    # (Admin doesn't need the user's current password.)
+    printf '%s\n%s\n' "$pw" "$pw" \
+      | immuadmin user changepassword "$user" >/dev/null \
+      || die "Could not rotate password for user '$user'"
+  else
+    log "  creating user '$user' with $perm on openclaw_audit"
+    printf '%s\n%s\n' "$pw" "$pw" \
+      | immuadmin user create "$user" "$perm" openclaw_audit >/dev/null \
+      || die "Could not create user '$user'"
+  fi
 }
+
+ensure_user appender  readwrite "$APPENDER_PW"
 vault_kv_put kv/openclaw/immudb/appender password "$APPENDER_PW"
 log "  ✓ appender password stored in Vault"
 
-# ── Create projector user (R-only) ──────────────────────────────────
-log "Creating user 'projector' (R-only on openclaw_audit)"
-docker exec -i oc-immudb sh -c "
-  immuadmin login immudb <<< '$NEW_ADMIN_PW' >/dev/null 2>&1
-  immuadmin user create projector readonly openclaw_audit <<EOF >/dev/null 2>&1
-$PROJECTOR_PW
-$PROJECTOR_PW
-EOF
-" || {
-  log "  user 'projector' may already exist — rotating password"
-  docker exec -i oc-immudb sh -c "
-    immuadmin login immudb <<< '$NEW_ADMIN_PW' >/dev/null 2>&1
-    immuadmin user changepassword projector <<EOF >/dev/null 2>&1
-$PROJECTOR_PW
-$PROJECTOR_PW
-EOF
-  " || die "Could not rotate projector password — Vault value would be stale; aborting."
-}
+ensure_user projector readonly "$PROJECTOR_PW"
 vault_kv_put kv/openclaw/immudb/projector password "$PROJECTOR_PW"
 log "  ✓ projector password stored in Vault"
 
