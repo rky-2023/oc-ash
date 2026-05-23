@@ -28,6 +28,11 @@ STREAMS_FILE="$INFRA_DIR/nats/streams.yaml"
 [[ -f "$STREAMS_FILE" ]] || die "streams config not found: $STREAMS_FILE"
 mountpoint -q /mnt/openclaw/nats || die "/mnt/openclaw/nats not mounted. Run 00 first."
 
+# ── Chown bind target BEFORE container start (uid 1000 = nats user) ─
+log "Setting /mnt/openclaw/nats ownership to 1000:1000"
+chown -R 1000:1000 /mnt/openclaw/nats
+chmod 700 /mnt/openclaw/nats
+
 # ── Bring up NATS if not already running ────────────────────────────
 if ! docker ps --format '{{.Names}}' | grep -qx oc-nats; then
   log "Starting oc-nats..."
@@ -36,17 +41,20 @@ if ! docker ps --format '{{.Names}}' | grep -qx oc-nats; then
   sleep 3
 fi
 
-# Wait for NATS to be reachable
-log "Waiting for NATS to be reachable..."
+# Wait for NATS to be reachable via docker inspect (image is minimal — no wget/sh wrapper)
+log "Waiting for oc-nats to be running + healthy..."
+ready=false
 for i in $(seq 1 30); do
-  if docker exec oc-nats sh -c 'wget -qO- http://127.0.0.1:8222/healthz 2>/dev/null | grep -q "\"status\": *\"ok\""'; then
-    break
+  state=$(docker inspect oc-nats --format '{{.State.Status}}' 2>/dev/null || echo missing)
+  [[ "$state" == "running" ]] || { sleep 1; continue; }
+  health=$(docker inspect oc-nats --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')
+  if [[ "$health" == "healthy" || "$health" == "none" ]]; then
+    ready=true; break
   fi
   sleep 1
 done
-
-# Fix ownership of mount point
-docker exec -u 0 oc-nats chown -R 1000:1000 /data 2>/dev/null || true
+$ready || die "NATS didn't reach healthy state in 30s — check 'docker logs oc-nats'."
+log "NATS is ready."
 
 # ── Parse streams.yaml and create each stream ───────────────────────
 # We use python3 (always present on Ubuntu) to parse YAML — avoids
@@ -104,30 +112,39 @@ for st in streams:
     descr = st.get("description", "")
 
     print(f"[oc-nats] Creating/updating stream {name}", flush=True)
+    # The nats:2.10-alpine server image does NOT include the `nats` CLI tool.
+    # We run nats-box (which has it) on the same docker network as oc-nats.
     cmd = [
-        "docker", "exec", "oc-nats",
-        "nats", "stream", "add", name,
+        "docker", "run", "--rm", "--network=oc-internal",
+        "natsio/nats-box",
+        "nats", "-s", "nats://oc-nats:4222",
+        "stream", "add", name,
         f"--subjects={subjects}",
         f"--storage={storage}",
         f"--retention={retention}",
         f"--max-age={max_age}s" if max_age else "--max-age=-1",
         f"--dupe-window={dup}s" if dup else "--dupe-window=0",
         f"--description={descr}",
-        "--ack",
         "--max-msgs=-1",
         "--max-bytes=-1",
         "--max-msg-size=-1",
         "--discard=old",
         "--replicas=1",
+        "--max-consumers=-1",
+        "--no-allow-rollup",
+        "--no-deny-delete",
+        "--no-deny-purge",
         "--defaults",
     ]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode == 0:
         print(f"[oc-nats]   ✓ {name}", flush=True)
-    elif "already in use" in r.stderr or "already exists" in r.stderr:
+    elif "already in use" in r.stderr or "already exists" in r.stderr or "stream name already" in r.stderr.lower():
         # Update existing stream to match
-        update_cmd = [c.replace("stream add", "stream update") if c == "add" else c for c in cmd]
-        update_cmd[5] = "update"
+        update_cmd = list(cmd)
+        # Replace "add" with "update" in the args
+        idx = update_cmd.index("add")
+        update_cmd[idx] = "update"
         r2 = subprocess.run(update_cmd, capture_output=True, text=True)
         if r2.returncode == 0:
             print(f"[oc-nats]   ✓ {name} (updated)", flush=True)
@@ -139,7 +156,8 @@ EOF
 
 log ""
 log "Stream list:"
-docker exec oc-nats nats stream list 2>&1 | head -20 || true
+docker run --rm --network=oc-internal natsio/nats-box \
+  nats -s nats://oc-nats:4222 stream list 2>&1 | head -20 || true
 
 log ""
 log "✓ Phase 2 task 2.4 complete."
