@@ -1,0 +1,81 @@
+# --- secrets / never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.kdbx
+secrets/
+.secrets/
+vault-unseal-*
+shamir-*.txt
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# --- node / next.js / react native ---
+node_modules/
+.next/
+out/
+.expo/
+.expo-shared/
+*.tsbuildinfo
+.npm/
+.yarn/
+.pnp.*
+
+# --- rust ---
+target/
+Cargo.lock.bak
+
+# --- android ---
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+.gradle/
+
+# --- editors / os ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- runtime / logs / data ---
+*.log
+*.pid
+logs/
+data/
+tmp/
+.tmp/
+oc-work/
+
+# --- generated ---
+sbom-*.json
+attestation-*.intoto.jsonl
+.terraform/
+terraform.tfstate*
+
+# --- session ephemeral ---
+sessions/*/scratch/
