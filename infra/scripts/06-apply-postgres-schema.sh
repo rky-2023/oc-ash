@@ -32,7 +32,7 @@ SCHEMA_FILE="$REPO_DIR/infra/postgres/openclaw-schema.sql"
 PG_CONTAINER="${OC_PG_CONTAINER:-}"
 if [[ -z "$PG_CONTAINER" ]]; then
   # Try common names from the Ashboard compose
-  for candidate in postgres ashboard-postgres ashboard_postgres oc-postgres; do
+  for candidate in postgres asher-postgres-1 ashboard-postgres-1 ashboard-postgres ashboard_postgres oc-postgres; do
     if docker ps --format '{{.Names}}' | grep -qx "$candidate"; then
       PG_CONTAINER="$candidate"
       break
@@ -40,12 +40,19 @@ if [[ -z "$PG_CONTAINER" ]]; then
   done
 fi
 [[ -n "$PG_CONTAINER" ]] || die \
-  "Could not auto-detect a running Postgres container. Set OC_PG_CONTAINER=<name>."
+  "Could not auto-detect a running Postgres container. Bring it up first:
+    cd /home/asher && docker compose up -d postgres
+  Then re-run, or set OC_PG_CONTAINER=<name>."
 log "Postgres container: $PG_CONTAINER"
+
+# Superuser to connect as. Ashboard's compose creates 'ashboard' as
+# the superuser (via POSTGRES_USER env at first init).
+PG_SUPER_USER="${OC_PG_SUPER_USER:-ashboard}"
+log "Postgres superuser:  $PG_SUPER_USER"
 
 # ── Apply schema as the postgres superuser ──────────────────────────
 log "Applying openclaw schema (idempotent)..."
-docker exec -i "$PG_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 \
+docker exec -i "$PG_CONTAINER" psql -U "$PG_SUPER_USER" -v ON_ERROR_STOP=1 \
   < "$SCHEMA_FILE" \
   | grep -vE '^(GRANT|CREATE|INSERT|ALTER|DO|COMMENT|SET)$' || true
 
@@ -70,7 +77,7 @@ log "Storing new openclaw_app password in Vault at kv/openclaw/postgres/app"
 vault_exec kv put kv/openclaw/postgres/app password="$NEW_PW" >/dev/null
 
 log "Setting openclaw_app password in Postgres"
-docker exec -i "$PG_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 \
+docker exec -i "$PG_CONTAINER" psql -U "$PG_SUPER_USER" -v ON_ERROR_STOP=1 \
   -c "ALTER ROLE openclaw_app WITH LOGIN PASSWORD '$NEW_PW';" >/dev/null
 
 unset NEW_PW ADMIN_TOKEN
