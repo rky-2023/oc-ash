@@ -129,60 +129,61 @@ EXPECT
   fi
 }
 
-immu_change_admin_pw() {
-  local old="$1" new="$2"
+# Lenient driver: matches any plausible prompt wording immuadmin might
+# emit across versions and code-paths. exp_continue cycles back to the
+# same alternatives until the success marker or eof is seen.
+#
+# Inputs via Tcl-set variables: $old (may be empty), $new
+immu_change_pw_lenient() {
+  local cmd="$1" old="$2" new="$3"
   expect <<EXPECT
 log_user 0
-set timeout 15
-spawn docker exec -it oc-immudb immuadmin user changepassword immudb
-expect "Old password:" { send -- "$old\r" }
+set timeout 20
+spawn $cmd
 expect {
-  "New password:" {
+  -re "(Old|Current) password:" {
+    send -- "$old\r"
+    exp_continue
+  }
+  -re "(New password:|Choose a password for)" {
     send -- "$new\r"
-    expect "Confirm new password:"
+    exp_continue
+  }
+  -re "(Confirm (new )?password:)" {
     send -- "$new\r"
+    exp_continue
+  }
+  "continue with your password instead" {
+    send -- "Y\r"
+    exp_continue
+  }
+  -re "(has been changed|successfully|created)" {
     expect eof
   }
+  eof    { }
   timeout { exit 1 }
 }
 EXPECT
+}
+
+immu_change_admin_pw() {
+  immu_change_pw_lenient \
+    "docker exec -it oc-immudb immuadmin user changepassword immudb" \
+    "$1" "$2"
 }
 
 immu_create_user() {
   local user="$1" perm="$2" pw="$3" db="$4"
-  expect <<EXPECT
-log_user 0
-set timeout 15
-spawn docker exec -it oc-immudb immuadmin user create $user $perm $db
-expect "Choose a password for $user:" { send -- "$pw\r" }
-expect "Confirm password:"            { send -- "$pw\r" }
-expect eof
-EXPECT
+  immu_change_pw_lenient \
+    "docker exec -it oc-immudb immuadmin user create $user $perm $db" \
+    "" "$pw"
 }
 
-# Change another user's password as admin. immuadmin prompts for new + confirm.
 immu_change_user_pw() {
   local user="$1" new="$2"
-  expect <<EXPECT
-log_user 0
-set timeout 15
-spawn docker exec -it oc-immudb immuadmin user changepassword $user
-expect {
-  "New password:" {
-    send -- "$new\r"
-    expect "Confirm new password:"
-    send -- "$new\r"
-    expect eof
-  }
-  "Choose a password for $user:" {
-    send -- "$new\r"
-    expect "Confirm password:"
-    send -- "$new\r"
-    expect eof
-  }
-  timeout { exit 1 }
-}
-EXPECT
+  immu_change_pw_lenient \
+    "docker exec -it oc-immudb immuadmin user changepassword $user" \
+    "" "$new"
 }
 
 immu_db_list() { docker exec oc-immudb immuadmin database list 2>/dev/null || true; }
