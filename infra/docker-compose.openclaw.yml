@@ -98,8 +98,12 @@ services:
     # in-process "address already in use" on bind. `command: server` is
     # all we want.
     command: server
+    # `vault status` exits 0 when unsealed, 2 when sealed/uninitialized, 1 on
+    # real error. We want "sealed" treated as HEALTHY (it's the expected
+    # post-restart state — operator unseals manually) and only mark unhealthy
+    # on actual errors (network down, config broken, etc.).
     healthcheck:
-      test: ["CMD", "vault", "status"]
+      test: ["CMD-SHELL", "vault status > /dev/null 2>&1 || [ $? -eq 2 ]"]
       interval: 30s
       timeout: 5s
       retries: 3
