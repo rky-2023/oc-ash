@@ -12,6 +12,7 @@ Scripts are **not** invoked automatically. They are interactive (passphrases, Sh
 | 01 | `01-bring-up-vault.sh` | 1.2 | `docker compose up vault` with pre-flight checks |
 | 02 | `02-init-vault.sh` | 1.3 part 1 | One-time `vault operator init -key-shares=5 -key-threshold=3` ceremony |
 | 03 | `03-unseal-vault.sh` | 1.3 part 2 | Interactive 3-share unseal (also used on every reboot) |
+| 04 | `04-vault-bootstrap.sh` | 1.4 + 1.5 + 1.6 + most of 1.7 | One-time post-unseal ceremony: enables audit log, mounts kv-v2 + PKI (root + intermediate + server/client roles) + transit signing keys + AppRole auth, creates the `openclaw-admin` AppRole, then destroys the root token after the operator captures the AppRole credentials. Idempotent until the gated DESTROY step. |
 
 One-time migration script (only needed if you ran `00-create-luks-volumes.sh` before the `/mnt`-paths fix):
 
@@ -19,10 +20,9 @@ One-time migration script (only needed if you ran `00-create-luks-volumes.sh` be
 |---|---|
 | `migrate-mount-paths-to-mnt.sh` | Unmount volumes from `/var/lib/openclaw/<svc>` and remount at `/mnt/openclaw/<svc>`. LUKS images stay where they are; no data loss. Run once, then remove. |
 
-Future scripts (PR #4):
-- `04-vault-bootstrap.sh` — Phase 1 tasks 1.4 (audit log) + 1.5 (secret engines) + 1.6 (admin AppRole + destroy root token)
-- `05-issue-internal-ca.sh` — Phase 1 task 1.7
-- `06-webauthn-rp.sh` — Phase 1 task 1.8 (stub server + relying-party config)
+Future scripts:
+- `05-vault-pki-tls-listener.sh` — Phase 1 task 1.7 remainder: replace Vault's bootstrap (disabled-TLS) listener with one issued from `pki_int/`.
+- `06-webauthn-rp.sh` — Phase 1 task 1.8 (stub server + relying-party config).
 
 ## Running them
 
@@ -52,12 +52,13 @@ Each script is idempotent where it can be safely so:
 - `01-bring-up-vault.sh` runs `docker compose up -d` which is naturally idempotent.
 - `02-init-vault.sh` **refuses to run** if Vault is already initialized — protects existing data.
 - `03-unseal-vault.sh` reports "already unsealed" and exits cleanly if Vault is already open.
+- `04-vault-bootstrap.sh` skips re-enabling already-mounted engines, already-created keys, etc. Re-runnable until the operator types DESTROY at the final root-revoke step.
 
 ## Safety properties
 
 - **No script writes any secret to disk.** Shamir shares are printed to the terminal once by `02-init-vault.sh`; you record them; nothing persists.
 - **No script keeps any secret in env or argv** of a sub-process. Passphrases and shares are piped via stdin to `cryptsetup` / `vault` to avoid `/proc/<pid>/cmdline` exposure.
-- **All destructive operations require operator confirmation.** `02-init-vault.sh` requires typing the word `READY` before proceeding.
+- **All destructive operations require operator confirmation.** `02-init-vault.sh` requires typing `READY`. `04-vault-bootstrap.sh` requires `CAPTURED` after AppRole creation and `DESTROY` before root-token revocation. `migrate-mount-paths-to-mnt.sh` requires `MIGRATE`.
 
 ## When something goes wrong
 
