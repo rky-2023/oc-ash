@@ -62,7 +62,7 @@ docker compose --env-file .env.openclaw -f docker-compose.openclaw.yml up -d vau
 
 log "Waiting for Vault to become reachable..."
 for i in $(seq 1 30); do
-  if docker exec oc-vault vault status -address=http://127.0.0.1:8200 2>/dev/null | grep -q "Initialized"; then
+  if docker exec oc-vault vault status 2>/dev/null | grep -q "Initialized"; then
     break
   fi
   sleep 1
@@ -70,7 +70,7 @@ done
 
 log ""
 log "Vault current status:"
-docker exec oc-vault vault status -address=http://127.0.0.1:8200 || true
+docker exec oc-vault vault status || true
 
 log ""
 log "Expected state:"

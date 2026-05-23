@@ -17,8 +17,7 @@ die()  { printf '\033[1;31m[oc-vault-unseal ERROR]\033[0m %s\n' "$*" >&2; exit 1
 docker exec oc-vault true 2>/dev/null \
   || die "oc-vault container is not running. Run ./01-bring-up-vault.sh first."
 
-STATUS_JSON=$(docker exec oc-vault vault status -address=http://127.0.0.1:8200 \
-  -format=json 2>/dev/null || true)
+STATUS_JSON=$(docker exec oc-vault vault status -format=json 2>/dev/null || true)
 
 if ! echo "$STATUS_JSON" | grep -q '"initialized":true'; then
   die "Vault is not initialized yet. Run ./02-init-vault.sh first."
@@ -26,7 +25,7 @@ fi
 
 if echo "$STATUS_JSON" | grep -q '"sealed":false'; then
   log "Vault is ALREADY UNSEALED. Nothing to do."
-  docker exec oc-vault vault status -address=http://127.0.0.1:8200
+  docker exec oc-vault vault status
   exit 0
 fi
 
@@ -45,9 +44,7 @@ for i in 1 2 3; do
     fi
     # Pipe share to vault operator unseal via stdin to avoid putting it
     # in the process argv (visible in /proc).
-    if echo "$share" | docker exec -i \
-         -e VAULT_ADDR=http://127.0.0.1:8200 \
-         oc-vault vault operator unseal - >/dev/null; then
+    if echo "$share" | docker exec -i oc-vault vault operator unseal - >/dev/null; then
       log "  ✓ share $i accepted"
       break
     else
@@ -59,7 +56,7 @@ done
 # ── Final status ──────────────────────────────────────────────────
 echo
 log "Final Vault status:"
-docker exec oc-vault vault status -address=http://127.0.0.1:8200
+docker exec oc-vault vault status
 
 if echo "$STATUS_JSON" | grep -q '"sealed":false'; then
   log "Vault is unsealed."

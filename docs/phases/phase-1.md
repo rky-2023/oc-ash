@@ -184,12 +184,63 @@ If you abort at the `DESTROY` step, the root token survives. Earlier steps are i
 
 ---
 
-### 1.7 Bootstrap the internal CA
+### 1.7 Internal CA + Vault listener TLS
 
-**Status:** the root + intermediate CA and the server/client issuance roles are already created by **`04-vault-bootstrap.sh`** as part of the 1.4–1.6 ceremony above. This task is therefore mostly a documentation cross-reference now.
+The root + intermediate CA + server/client issuance roles were already created by `04-vault-bootstrap.sh` (1.5). This task closes the remaining gap: **swap Vault's own listener from plaintext HTTP to TLS** using a cert issued from `pki_int/`.
 
-**Still to do here (manual):**
-- Replace Vault's own listener cert with one issued from `pki_int/` (so Vault itself is part of its own trust chain). The bootstrap listener was disabled-TLS to simplify init; switching it to TLS now closes the gap. Procedure script lands in a follow-up PR.
+**Script:** [`infra/scripts/05-vault-tls-listener.sh`](../../infra/scripts/05-vault-tls-listener.sh).
+
+**What it does:**
+
+| Step | What |
+|---|---|
+| Pre-flight | Verifies Vault is unsealed. Prompts for `openclaw-admin` Role ID + Secret ID (secret-id is hidden, piped via stdin). |
+| Role config | Creates / updates `pki_int/roles/vault-listener` — separate role from the general `server` role because the listener cert has 30-day TTL (no vault-agent self-renewal yet) vs. 24h for service leafs. |
+| Issue | Calls `pki_int/issue/vault-listener` with `common_name=vault.openclaw.local`, `alt_names=localhost,vault,oc-vault`, `ip_sans=127.0.0.1`. |
+| Place files | Writes `server.crt`, `server.key`, `ca.crt`, `fullchain.crt` into `/vault/data/tls/` inside the container (mode 0600 for key, 0644 for cert/CA, owned by uid 100). |
+| Publish CA | Copies the issuing CA cert to `/mnt/openclaw/shared/ca.crt` on the host so other services can bind-mount it as their trust anchor. |
+| Restart | `docker compose restart vault`. Vault picks up the TLS-enabled `server.hcl` (already shipped in this PR) and the new cert files. |
+
+The TLS-enabled `server.hcl` is included in the PR; pulling it before running the script ensures the restart works. `docker-compose.openclaw.yml` is also updated: `VAULT_ADDR=https://...` and `VAULT_CACERT=/vault/data/tls/ca.crt` so the container's `vault` CLI verifies the listener cert. All existing scripts (01–04) drop their explicit `-address=http://...` flags and rely on the container env.
+
+**Steps to run:**
+
+```sh
+sudo ./infra/scripts/05-vault-tls-listener.sh
+# Provide openclaw-admin Role ID + Secret ID when prompted.
+sudo ./infra/scripts/03-unseal-vault.sh
+```
+
+**Verify:**
+
+```sh
+docker exec oc-vault vault status                                  # should report Sealed: false over HTTPS
+openssl s_client -connect 127.0.0.1:8200 -showcerts </dev/null     # cert chain rooted at pki_root CA
+docker exec oc-vault vault list -format=json pki_int/issuers       # at least one issuer present
+```
+
+**Renewal:** the listener cert expires in 30 days. Re-run `05-vault-tls-listener.sh` monthly until vault-agent self-renewal is wired up (Phase 11 hardening or earlier if convenient).
+
+---
+
+### 1.12 vault-agent sidecar template
+
+**Why:** Every downstream openclaw service needs an mTLS leaf cert that auto-rotates well before its 24h TTL expires. The standard pattern is a per-service `vault-agent` sidecar that authenticates via AppRole, renders the cert + key to tmpfs, and signals the service on rotation.
+
+**Files:** [`infra/vault-agent/`](../../infra/vault-agent/) — base image + config template + README.
+
+- `Dockerfile` — `hashicorp/vault:1.18.0` base, runs `vault agent`, non-root (uid 100).
+- `vault-agent.hcl.template` — template config with `@@SERVICE_NAME@@` / `@@NAMESPACE@@` placeholders. Substitute with `sed` per service. Renders mTLS cert + key + CA + token to `/run/openclaw/` (tmpfs).
+- `README.md` — 6-step per-service usage walk-through (create AppRole → mint credentials → render config → wire compose → service consumes).
+
+**Status:** no service uses this template yet — `core/` is still scaffold and Phase 2 task 2.5 wires it up first. The deployment helper script that automates the 6 manual steps also lands in Phase 2.
+
+**Design notes worth retaining:**
+
+- Agent runs as a *separate container* (sidecar pattern), not in-process. A compromised service can read rendered files but never reads the AppRole secret-id.
+- All rendered material lives on tmpfs (`/run/openclaw/`). Disk never sees it.
+- 24h cert TTL, 12h render cadence — service never experiences a hard cut-off.
+- `uri_sans` uses SPIFFE format so future SPIRE integration is a drop-in (ADR-002 A5).
 
 **Verify:** `vault write pki_int/issue/server common_name=test.openclaw.local uri_sans=spiffe://openclaw.local/test/test` returns a cert; `openssl x509 -in <that-cert> -text -noout` shows the SPIFFE URI SAN and 24-hour notAfter.
 
@@ -403,3 +454,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 - **2026-05-23 (v1.3)** — Tasks 1.1, 1.2, 1.3 rewritten to reference the new `infra/scripts/` helpers (00-create-luks-volumes / 01-bring-up-vault / 02-init-vault / 03-unseal-vault). 1.1 expanded to cover all 4 dm-crypt volumes (vault + immudb + nats + minio) since Phase 2 needs them too. 1.2 reframed: Vault runs as a docker-compose container, not a host systemd unit, matching the Phase 2 scaffold.
 - **2026-05-23 (v1.4)** — Task 1.1 mount points moved from `/var/lib/openclaw/<svc>/` to `/mnt/openclaw/<svc>/` because snap-installed Docker is confined and cannot see `/var/lib/`. LUKS image files remain at `/var/lib/openclaw/luks/<svc>.img` (Docker never accesses those). Docker-compose bind-mount paths and rollback procedure 3 updated accordingly.
 - **2026-05-23 (v1.5)** — Tasks 1.4 / 1.5 / 1.6 collapsed into a single ceremony backed by `infra/scripts/04-vault-bootstrap.sh`. Script enables audit log, mounts kv-v2 + pki_root + pki_int + transit + approle, generates the internal CA hierarchy with 24h-TTL Ed25519 server/client roles, creates the named transit keys, mints the `openclaw-admin` AppRole, and (gated by typing DESTROY) revokes the root token. Task 1.7 mostly absorbed by 1.5 — only the "swap Vault's bootstrap listener to its own pki_int cert" step remains.
+- **2026-05-23 (v1.6)** — Task 1.7 completed via `infra/scripts/05-vault-tls-listener.sh`. New `pki_int/roles/vault-listener` (30-day TTL); server.hcl, docker-compose.openclaw.yml updated to enable TLS + verify via `/vault/data/tls/ca.crt`. CA cert published to `/mnt/openclaw/shared/ca.crt` for downstream services. Scripts 01–04 stripped of explicit `-address=http://...` flags (env wins). Task 1.12 vault-agent sidecar template added at `infra/vault-agent/` (Dockerfile + template config + README) — not wired into any service yet; Phase 2 task 2.5 picks it up.
