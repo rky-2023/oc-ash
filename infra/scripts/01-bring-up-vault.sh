@@ -46,6 +46,15 @@ fi
 command -v docker >/dev/null 2>&1 || die "docker not installed"
 docker compose version >/dev/null 2>&1 || die "docker compose v2 not available"
 
+# ── Set ownership on Vault's data dir ─────────────────────────────
+# The hashicorp/vault container runs as user `vault` (uid 100, gid 1000).
+# Our LUKS mount point is created root:root mode 700 by 00-create-luks-volumes.sh
+# so the Vault process inside the container can't write to /vault/data.
+# Chown the bind target to the container's vault user, keep mode 700.
+log "Ensuring /mnt/openclaw/vault is owned by vault container user (uid 100)..."
+chown -R 100:1000 /mnt/openclaw/vault
+chmod 700 /mnt/openclaw/vault
+
 # ── Bring up vault only ───────────────────────────────────────────
 log "Starting Vault container..."
 cd "$INFRA_DIR"
