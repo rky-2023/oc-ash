@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>openclaw</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>openclaw</h1>
+    <p class="hint">Self-hosted personal agent fabric. Phase 1 WebAuthn relying-party scaffold.</p>
+    <nav>
+      <a class="btn" href="/register">Register a new device</a>
+      <a class="btn" href="/login">Log in</a>
+    </nav>
+    <footer>
+      <p class="muted">
+        This is the development-mode UI. It speaks WebAuthn against
+        <code id="rp"></code>. Phone-via-QR enrollment requires HTTPS on a real
+        domain — for now use your laptop's built-in passkey support
+        (Touch ID / Windows Hello / TPM2 + libfido2 / browser passkey).
+      </p>
+    </footer>
+  </main>
+  <script>document.getElementById('rp').textContent = location.host;</script>
+</body>
+</html>

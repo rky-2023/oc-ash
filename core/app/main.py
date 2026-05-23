@@ -15,10 +15,14 @@ healthcheck passes and the dev loop is usable.
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import structlog
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from app.auth.router import router as auth_router
 from app.config import settings
 from app.health import router as health_router
 
@@ -53,6 +57,31 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.env == "production" else "/openapi.json",
     )
     app.include_router(health_router)
+    app.include_router(auth_router)
+
+    # Serve the minimal HTML/JS pages used for WebAuthn enrollment + login.
+    # Phase 1 task 1.8 ships these inline with the API service; Phase 9
+    # introduces a proper Next.js UI on a separate origin.
+    web_dir = Path(__file__).parent / "web"
+    if web_dir.is_dir():
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(web_dir / "static")),
+            name="static",
+        )
+
+        @app.get("/", include_in_schema=False)
+        async def _root() -> FileResponse:
+            return FileResponse(web_dir / "index.html")
+
+        @app.get("/register", include_in_schema=False)
+        async def _register_page() -> FileResponse:
+            return FileResponse(web_dir / "register.html")
+
+        @app.get("/login", include_in_schema=False)
+        async def _login_page() -> FileResponse:
+            return FileResponse(web_dir / "login.html")
+
     return app
 
 
