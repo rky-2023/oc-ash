@@ -169,11 +169,16 @@ EOF
 read -rp "Press ENTER to restart Vault, or Ctrl+C to abort: " _
 
 INFRA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# IMPORTANT: --force-recreate (not `restart`). Compose env changes only
+# apply to a NEW container, not to a restart of the existing one. Without
+# recreate the CLI inside the container still has VAULT_ADDR=http://...
+# from when it was first created, and trying to talk to the now-HTTPS
+# listener returns "Client sent an HTTP request to an HTTPS server."
 docker compose --env-file "$INFRA_DIR/.env.openclaw" \
-  -f "$INFRA_DIR/docker-compose.openclaw.yml" restart vault
+  -f "$INFRA_DIR/docker-compose.openclaw.yml" up -d --force-recreate vault
 
-sleep 3
-log "Vault restarting. Current status:"
+sleep 5
+log "Vault recreated. Current status:"
 docker exec oc-vault vault status 2>&1 | head -15 || true
 
 cat <<'EOF'
