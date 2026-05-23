@@ -20,11 +20,16 @@ docker exec oc-vault true 2>/dev/null \
 STATUS_JSON=$(docker exec oc-vault vault status -address=http://127.0.0.1:8200 \
   -format=json 2>/dev/null || true)
 
-if ! echo "$STATUS_JSON" | grep -q '"initialized":true'; then
+# Vault status -format=json is pretty-printed (space after colon). Match
+# both compact ("initialized":true) and pretty ("initialized": true) forms.
+INIT_RE='"initialized"[[:space:]]*:[[:space:]]*true'
+SEALED_FALSE_RE='"sealed"[[:space:]]*:[[:space:]]*false'
+
+if ! echo "$STATUS_JSON" | grep -Eq "$INIT_RE"; then
   die "Vault is not initialized yet. Run ./02-init-vault.sh first."
 fi
 
-if echo "$STATUS_JSON" | grep -q '"sealed":false'; then
+if echo "$STATUS_JSON" | grep -Eq "$SEALED_FALSE_RE"; then
   log "Vault is ALREADY UNSEALED. Nothing to do."
   docker exec oc-vault vault status -address=http://127.0.0.1:8200
   exit 0

@@ -26,7 +26,9 @@ docker exec oc-vault true 2>/dev/null \
 INIT_STATUS=$(docker exec oc-vault vault status -address=http://127.0.0.1:8200 \
   -format=json 2>/dev/null || true)
 
-if echo "$INIT_STATUS" | grep -q '"initialized":true'; then
+# Vault status -format=json is pretty-printed (space after colon). Match
+# both compact and pretty forms so the safety check never silently misses.
+if echo "$INIT_STATUS" | grep -Eq '"initialized"[[:space:]]*:[[:space:]]*true'; then
   die "Vault is ALREADY INITIALIZED. Aborting to protect existing data. If you really want to start over, you must wipe /mnt/openclaw/vault first."
 fi
 
