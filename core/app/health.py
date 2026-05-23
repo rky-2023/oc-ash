@@ -10,6 +10,8 @@ compose healthcheck and the Phase 2 smoke tests can validate the shape.
 
 from fastapi import APIRouter, Response, status
 
+from app.bus.nats_client import get_bus
+
 router = APIRouter(tags=["health"])
 
 
@@ -24,26 +26,34 @@ async def health() -> dict[str, object]:
 
 @router.get("/health/deps", summary="Readiness probe — downstream dependencies")
 async def health_deps(response: Response) -> dict[str, object]:
+    """Real readiness probes for everything we currently connect to.
+
+    NATS:    queried via the connection's is_connected flag
+    immudb:  not yet — appender service owns this in a follow-up PR
+    postgres / vault / opa: also follow-ups
+
+    Returns 200 with status detail; flips to 503 if a REQUIRED dep is
+    down. For now NATS is the only required dep — if NATS is
+    unreachable, audit publishing degrades (no requests are blocked,
+    but envelopes are dropped — see middleware._publish_safe).
     """
-    Phase 2 task 2.5 will replace these placeholders with actual ping checks
-    against NATS (`SUB oc.health.ping`), immudb (`db.health()`), Postgres
-    (`SELECT 1`), and Vault (`sys/health`). Until then, this endpoint reports
-    structure but not real status.
-    """
+    bus = get_bus()
+    nats_status = await bus.health_check()
+
     deps_status = {
-        "nats": "not-yet-wired",
+        "nats": nats_status,
         "immudb": "not-yet-wired",
         "postgres": "not-yet-wired",
         "vault": "not-yet-wired",
         "opa": "not-yet-wired",
     }
 
-    # Until all deps are wired we still return 200 — the scaffold is
-    # intentionally "live but not ready." Phase 2 task 2.5 flips this to
-    # 503 if any required dep is down.
+    # `down` for NATS isn't fatal — middleware still serves requests,
+    # just doesn't audit. So we return 200 with status==degraded rather
+    # than 503. Flip to 503 once a dep becomes load-bearing.
     response.status_code = status.HTTP_200_OK
     return {
         "ok": True,
         "deps": deps_status,
-        "note": "Phase 2 task 2.5 wires real readiness checks; scaffold stage",
+        "summary": "ok" if nats_status == "ok" else "degraded",
     }

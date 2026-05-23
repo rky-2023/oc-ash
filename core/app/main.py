@@ -22,7 +22,9 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.audit.middleware import AuditMiddleware
 from app.auth.router import router as auth_router
+from app.bus.nats_client import get_bus
 from app.config import settings
 from app.health import router as health_router
 
@@ -37,13 +39,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         env=settings.env,
         log_level=settings.log_level,
     )
-    # Phase 2 task 2.5: open NATS client and stash on app.state.
-    # Phase 2 task 2.5: open immudb client and stash on app.state.
-    # Phase 2 task 2.5: read secrets from settings.secrets_dir.
-    # Phase 2 task 2.6: prepare audit envelope signer (Vault transit client).
+
+    # NATS connection — non-fatal if it can't connect at startup;
+    # publish-safe in the middleware logs and continues. Re-connect
+    # is handled by nats-py's built-in reconnect loop (-1 = forever).
+    bus = get_bus()
+    try:
+        await bus.connect()
+    except Exception as e:
+        log.warning(
+            "nats.connect.failed_at_startup",
+            err=str(e),
+            note="audit publishes will be no-ops until NATS reachable",
+        )
+    app.state.bus = bus
+
+    # Phase 2 task 2.6+ TODO:
+    #   - open immudb client (will live in core's audit-appender service,
+    #     not in the core HTTP service itself — keeps the HTTP path lean)
+    #   - read non-Vault secrets from settings.secrets_dir (rendered by
+    #     vault-agent sidecar — Phase 2 task 2.5b)
+    #   - swap signer to use Vault transit/sign/audit-service
+
     yield
+
     log.info("openclaw-core shutting down")
-    # Phase 2 task 2.5: close NATS / immudb / Postgres connections cleanly.
+    await bus.close()
 
 
 def create_app() -> FastAPI:
@@ -56,6 +77,11 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None if settings.env == "production" else "/openapi.json",
     )
+    # Audit middleware sits OUTSIDE the routers so it observes every
+    # request, including 404s and validation errors. Skip-list inside
+    # the middleware excludes /health and /static.
+    app.add_middleware(AuditMiddleware)
+
     app.include_router(health_router)
     app.include_router(auth_router)
 

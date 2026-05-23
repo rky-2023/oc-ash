@@ -157,7 +157,26 @@ Pre-chown of `/mnt/openclaw/nats` to uid 1000. NATS server image is also minimal
 
 ---
 
-### 2.5 Scaffold openclaw-core (the Python service)
+### 2.5 Scaffold openclaw-core — bus wiring + audit envelope  🟡 partial 2026-05-23
+
+**Status:** the bus + envelope foundation is shipped. immudb writer, Vault transit signing, Postgres connection, and mTLS deferred to follow-up PRs (each focused).
+
+**What landed in this PR:**
+
+| File | Purpose |
+|---|---|
+| `core/app/audit/envelope.py` | Pydantic v2 model implementing the ADR-003 D2 schema (ulid, ts, subject, conv_id, actor, action, direction, hashes, policy, redacted_payload, encrypted_blobs, prev_hash, sig_service, sig_appender). Canonical serialization for signing + a hash helper for chaining. |
+| `core/app/audit/signer.py` | Process-local HMAC-SHA256 signer (same MVP trade-off as auth/sessions.py). Per-envelope `service` / `appender` slots. Vault transit `transit/sign/audit-service` is the next-PR target. |
+| `core/app/bus/nats_client.py` | Async NATS connection + JetStream context. Single-singleton via `get_bus()`. Auto-reconnect forever. `publish(subject, bytes, msg_id=)` uses JS ack so envelopes land in the right stream. |
+| `core/app/audit/middleware.py` | FastAPI middleware emits a request envelope BEFORE and a response envelope AFTER each handler. Skip-list for /health and /static. Non-blocking on publish failure (logs warning, request continues). Stamps `X-OC-Conv-Id` on every response. |
+| `core/app/main.py` | Lifespan opens NATS at startup, closes on shutdown. `AuditMiddleware` added before routers. |
+| `core/app/health.py` | `/health/deps` now reports real NATS status (ok / reconnecting / down). |
+| `core/tests/test_envelope.py` | 8 tests — round-trip, canonical determinism, sign/verify both slots, tamper detection, prev_hash chain. |
+| `core/tests/test_audit_middleware.py` | 4 tests — skip-list, conv-id header on non-skipped responses, 404 still audited, POST body passes through middleware to handler. |
+
+**Important property the design preserves:** if NATS is down, requests still succeed — they just don't get audited. Per ADR-003 D4 the appender-side has a paranoid-mode halt at >24h immudb lag, but the FRONT-end (this middleware) never gates traffic on audit health. Audit is "record truth, don't gate traffic."
+
+**Next code-heavy PR (Phase 2 task 2.5b + 2.6):** swap signer to Vault transit, render secrets via vault-agent sidecar, add the `audit-appender` standalone service that subscribes to `oc.event.>` and writes to immudb.
 
 **Why:** The FastAPI service that owns the audit appender, the MCP proxy (Phase 4), the A2A router (Phase 4), and the HTTP edge handlers. Phase 1 stood up a minimal version for WebAuthn; Phase 2 extends it.
 
