@@ -205,7 +205,7 @@ Tailscale provides the mesh between rky's devices and the server, including the 
 ## Open questions (still pending)
 
 - Android app distribution: sideload-only vs. a private Play track.
-- Future ADR on public ingress (Cloudflare Tunnel vs. alternative) — required before Phase 3's GitHub-webhook receiver can be built.
+- ~~Future ADR on public ingress~~ → **resolved by ADR-004 (Accepted 2026-05-23):** defer-and-poll now, Cloudflare Tunnel when triggered.
 
 ---
 
@@ -215,3 +215,4 @@ Tailscale provides the mesh between rky's devices and the server, including the 
 - **2026-05-23 (v1.1)** — Four open questions resolved: Shamir-only unseal (no Tang), separate-repo attestation log, MIT license confirmed, Tailscale-now-Cloudflare-later with webhook ingestion deferred. Body and PLAN.md updated to match.
 - **2026-05-23 (v1.2)** — ADR-002 and ADR-003 drafted and Accepted; "pending" markers removed from Related and Open Questions sections.
 - **2026-05-23 (v1.3)** — R2 amended: attestations repo created as **private** (witness-by-invitation), not public. Trade-off and deferred-mitigation (invite external read-only witnesses or run a cron-based off-host divergence check) documented.
+- **2026-05-23 (v1.4)** — "Future ADR on public ingress" open question marked resolved by ADR-004 (defer-and-poll now, Cloudflare Tunnel when triggered).

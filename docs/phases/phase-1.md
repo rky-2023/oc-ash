@@ -9,28 +9,56 @@
 
 ## Prerequisites
 
-These are not done by code — order/buy them now if you haven't:
+Two prerequisite tracks: **steady-state (ADR-002 D2)** and **cost-free interim (ADR-002 D13)**. Pick the interim track for now; migrate to steady-state when hardware arrives. The Vault setup itself is identical; only the authenticator changes.
+
+### Steady-state hardware (when budget allows — ADR-002 D2):
 
 | Item | Notes |
 |---|---|
-| 2× **YubiKey 5C NFC** | Two devices, not one. ADR-002 D3 refuses to bootstrap with only one. NFC is required for D9 Android pairing. Buy from Yubico direct — chain-of-custody matters. |
-| 1× **metal seed plate** (Cryptosteel / Trezor Steel / Coldcard) | Holds the Shamir share that must survive fire/water. |
-| 2× **paper** for Shamir shares + YubiKey FIDO2 PIN | Acid-free archival paper recommended. Pencil > ink (ink fades, pencil doesn't bleed if wet). |
-| 1× **fireproof / waterproof small safe** | Holds the spare YubiKey + 1 paper Shamir share + the PIN paper. |
-| **Tailnet ready** | rky's laptop and the server already on the same tailnet (ADR-001 R4). Android device added later in Phase 9. |
+| 2× **YubiKey 5C NFC** | Two devices, not one. ADR-002 D3 refuses to bootstrap steady-state with only one. NFC is required for D9 Android pairing. Buy from Yubico direct — chain-of-custody matters. |
+| 1× **metal seed plate** (Cryptosteel / Trezor Steel / Coldcard) | Optional but recommended: holds the Shamir share that must survive fire/water. |
+| 1× **fireproof / waterproof small safe** | Optional but recommended: holds spare YubiKey + 1 paper Shamir share + PIN paper. |
+
+### Cost-free interim (ADR-002 D13 active — use this **now**):
+
+| Item | Notes |
+|---|---|
+| **Platform authenticator** on laptop | Touch ID (Mac) / Windows Hello (Win 10/11) / `libfido2`+TPM2 (Linux). No purchase required. |
+| (Optional) **Second device** | Phone or second laptop, also enrolled as a platform authenticator. Recovers the "two authenticators" property of D3 in software form. |
+| **Paper + pencil** | For Shamir shares (~5 small slips). |
+| **Sealed envelopes** | Standard envelopes to protect paper shares from casual reading. |
+| **Password manager** with encrypted-notes feature | Bitwarden free / KeePassXC / 1Password / etc. Holds 1 of the 5 Shamir shares as an encrypted text note. |
+| **Tailnet ready** | rky's laptop and the server already on the same tailnet (ADR-001 R4). Android added later in Phase 9. |
 | **Tang server hardware** | **Not needed** — ADR-001 R1 chose Shamir-only. Skipped intentionally. |
 
-**Geographic distribution of the 5 Shamir shares:**
+### Shamir distribution — what you actually do
 
-| Share | Medium | Location |
-|---|---|---|
-| 1 | Metal plate | Fireproof safe at home |
-| 2 | Paper | Fireproof safe at home (with metal plate) |
-| 3 | Paper | Trusted offsite location A (e.g., parent's house) |
-| 4 | Paper | Trusted offsite location B (e.g., bank safe deposit box) |
-| 5 | (Optional) Encrypted USB | Anywhere convenient — this is the only one you can lose without consequence |
+When `vault operator init -key-shares=5 -key-threshold=3` runs (task 1.3), Vault prints 5 unseal keys and 1 root token to your terminal **once**. After you close the terminal, they're gone forever. You must capture them in the same session and immediately distribute them.
 
-Threshold is 3-of-5, so any 3 of these must come together for recovery. Losing any 2 is recoverable; losing any 3 is total lockout (by design).
+**Cost-free 5-location distribution:**
+
+| Share # | Medium | Location | Rationale |
+|---|---|---|---|
+| 1 | Paper (pencil, sealed envelope) | **In your wallet** | Always on you; fastest recovery; survives house fire because it's with you |
+| 2 | Paper (pencil, sealed envelope) | **Drawer at home** (kitchen / desk / bedside) | Most likely place you'll be when you need it |
+| 3 | Paper (pencil, sealed envelope, mailed) | **Trusted family member's home** | Geographic separation from #1 and #2; house fire can't take all three |
+| 4 | Encrypted note in your **password manager** | Digital, accessible from anywhere you can log in | Cloud-redundant; survives device loss |
+| 5 | Paper (pencil, sealed envelope) | **Obscure on-site spot** (e.g., taped to back of picture frame, inside an old book on a high shelf) | Second on-site copy; hard for a casual breach to find |
+
+Threshold is **3-of-5**: any 3 reconstruct the secret; fewer than 3 reveal mathematically nothing. So losing any 2 shares is fine. Losing 3 simultaneously (e.g., wallet stolen + house fire + password manager compromise on the same day) is total lockout — and that's the design.
+
+**Hard rules (don't violate these):**
+
+- Don't store all 5 in one location (defeats Shamir entirely).
+- Don't store any share digitally without encryption — `~/shamir.txt` on the laptop is unacceptable.
+- Don't email shares to yourself — Gmail compromise → openclaw compromise.
+- Don't store the unseal shares with your password-manager **master password** (single point of failure).
+- Don't store any share with your Vault dm-crypt **disk passphrase** — a single physical breach must never yield both.
+- Don't store shares with the FIDO2 PIN paper — same reason.
+
+**Upgrade path (when you have budget):**
+
+Replace any paper share with a metal seed plate at the same location. The most important share to upgrade is #2 or #5 (the "fireproof safe at home" share), since paper at home is the most vulnerable to house fire. The metal plate is ~$30 and is a meaningful upgrade.
 
 ---
 
@@ -188,30 +216,63 @@ Each downstream service's AppRole has read access only to its own subtree under 
 
 ---
 
-### 1.9 Enroll the primary YubiKey [hands-on]
+### 1.9 Enroll the primary authenticator [hands-on]
 
 **Why:** The first hardware identity. Until this exists you can't admin anything past the AppRole shell.
 
+#### 1.9a — Cost-free interim path (ADR-002 D13 active):
+
+Use the laptop's **platform authenticator** instead of a YubiKey:
+
+- **macOS:** Touch ID (Secure Enclave). Works in Safari / Chrome / Firefox / Brave.
+- **Windows 10/11:** Windows Hello with TPM 2.0. Requires a Microsoft account or local PIN setup.
+- **Linux:** `libfido2` + TPM 2.0. Most laptops since ~2018 have TPM 2.0. In Chrome/Firefox the platform authenticator appears automatically once `libfido2` is installed (`sudo apt install libfido2-1 libfido2-dev` on Debian/Ubuntu).
+- **ChromeOS:** Built-in WebAuthn, TPM-backed.
+
 **Steps:**
-- **[hands-on]** Plug in YubiKey #1. Set the FIDO2 PIN using `ykman fido access change-pin`. Choose a high-entropy PIN; write it on paper now and put it in the safe with share #2.
-- Browse to the openclaw web UI registration endpoint (in a browser on the laptop, on the tailnet).
-- Complete WebAuthn registration. The browser will prompt for YubiKey touch + PIN.
+- **[hands-on]** Browse to the openclaw web UI registration endpoint on the laptop (on the tailnet).
+- When the WebAuthn prompt appears, **choose "this device"** (or equivalent) rather than "USB security key."
+- Verify with Touch ID / Hello PIN / TPM PIN as prompted.
 - The server stores the credential ID, public key, and direct attestation in `kv/openclaw/webauthn/credentials/<credential-id>`.
 
-**Verify:** `curl https://oc.<tailnet>.ts.net/auth/webauthn/credentials` (with a valid session) shows exactly one credential.
+**Verify:** `curl https://oc.<tailnet>.ts.net/auth/webauthn/credentials` (with a valid session) shows exactly one credential with `attestation.aaguid` reporting a platform authenticator (not a YubiKey AAGUID).
+
+#### 1.9b — Steady-state path (when YubiKeys arrive):
+
+- **[hands-on]** Plug in YubiKey #1. Set the FIDO2 PIN using `ykman fido access change-pin`. Choose a high-entropy PIN; write it on paper now and put it in the safe.
+- Log in with the platform authenticator from 1.9a, then enroll YubiKey #1 as an *additional* authenticator (do not displace the platform one until both YubiKeys are working).
+- Test login from YubiKey #1 alone (no platform authenticator). Must succeed.
+
+**Verify (steady-state):** `webauthn/credentials` lists at least one YubiKey + one platform authenticator. The YubiKey's `attestation.aaguid` matches Yubico's published GUIDs.
 
 ---
 
-### 1.10 Enroll the spare YubiKey [hands-on]
+### 1.10 Enroll the spare authenticator [hands-on]
 
-**Why:** ADR-002 D3 refuses to proceed with only one. If you skip this step you've already broken the threat model.
+**Why:** ADR-002 D3 refuses to call the system "production-ready" with only one authenticator. ADR-002 D13 (interim) accepts a single platform authenticator at bootstrap *but* strongly recommends a second device be enrolled.
+
+#### 1.10a — Cost-free interim path:
+
+Use a **second device** (phone or second laptop) as a second platform authenticator:
+
+- **Phone:** Browse to the web UI on the phone (it's on the tailnet — make sure Tailscale is installed and authenticated on the phone). The phone's platform authenticator (Touch ID / Face ID / Android biometric) acts as the second factor.
+- **Second laptop:** Same as 1.9a but on the other machine.
 
 **Steps:**
-- **[hands-on]** Plug in YubiKey #2. Set its FIDO2 PIN (can be different — they don't need to match, but you'll need both PINs noted on the paper in the safe).
-- While still logged in with #1, register #2 through the same enrollment flow.
-- **[hands-on]** Put YubiKey #2 in the safe with the paper and the metal plate. Do not carry both keys at once.
+- While logged in on the primary device (from 1.9a), open the registration endpoint on the secondary device.
+- Complete WebAuthn registration with the secondary device's biometric/PIN.
+- Test login from each device independently. Both must work.
 
-**Verify:** `webauthn/credentials` lists two credentials. `oc auth list` (the new CLI you build alongside) shows both.
+If you don't have a second device available, you may proceed with only one platform authenticator — but document this in `docs/RUNBOOK.md` as a known reduced-redundancy state and migrate to a second authenticator (device or YubiKey) as soon as practical.
+
+#### 1.10b — Steady-state path (when YubiKeys arrive):
+
+- **[hands-on]** Plug in YubiKey #2. Set its FIDO2 PIN (can be different from #1; both noted on PIN paper in safe).
+- While logged in with YubiKey #1, register YubiKey #2.
+- **[hands-on]** Put YubiKey #2 in the safe. Do not carry both keys at once.
+- **Optionally** revoke the platform authenticators with `oc auth revoke-key <credential-id>` (returns to strict D2/D3 compliance), or leave one platform authenticator as a third backup (slight D3 deviation but more recovery margin).
+
+**Verify (steady-state):** `webauthn/credentials` lists two YubiKey credentials. Login from each YubiKey independently must succeed.
 
 ---
 
@@ -340,3 +401,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 
 - **2026-05-23 (v1)** — Drafted alongside ADR-002 and ADR-003 acceptance. Will be revised once execution begins and real-world friction surfaces.
 - **2026-05-23 (v1.1)** — Task 1.5 Vault path layout aligned with ADR-002 D12 (Secret-vs-config split): public-by-design lookups (client_id, app_id, installation_ids, rp_id, FCM project IDs, redaction policy hash) moved out of `kv/openclaw/` and into the Postgres `openclaw.lookup` schema (created in Phase 2 task 2.1).
+- **2026-05-23 (v1.2)** — Prerequisites restructured into "steady-state hardware" (ADR-002 D2) and "cost-free interim" (ADR-002 D13) tracks. Cost-free Shamir distribution table added with concrete locations and hard rules. Tasks 1.9/1.10 split into 1.9a/1.9b/1.10a/1.10b reflecting interim platform-authenticator path and steady-state YubiKey path.
