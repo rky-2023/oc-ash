@@ -142,40 +142,37 @@ vault_exec secrets tune -max-lease-ttl=8760h pki_int >/dev/null
 INT_CA=$(vault_exec read -field=certificate pki_int/cert/ca 2>/dev/null || true)
 if [[ -z "$INT_CA" ]]; then
   log "  Generating intermediate CSR + signing with root"
-  CSR=$(vault_exec write -format=json pki_int/intermediate/generate/internal \
-    common_name="openclaw internal intermediate CA" \
-    key_type=ed25519 \
-    | docker exec -i oc-vault sh -c 'cat > /tmp/csr.json && cat /tmp/csr.json' \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["csr"])' \
-    2>/dev/null) || {
-      # Fallback if python3 not available on host: parse via grep
-      CSR=$(vault_exec write -format=json pki_int/intermediate/generate/internal \
-        common_name="openclaw internal intermediate CA" \
-        key_type=ed25519 \
-        | grep -oE '"csr":[[:space:]]*"[^"]*"' \
-        | sed 's/^"csr":[[:space:]]*"//; s/"$//' \
-        | sed 's/\\n/\n/g')
-    }
 
-  # Write CSR to a tmpfile, sign with root, set the signed cert back on the intermediate
-  TMP_CSR=$(mktemp); TMP_CRT=$(mktemp)
+  # Use temporary files on both host and container. The host files are
+  # cleaned by the EXIT trap registered below; the container files we
+  # `rm` explicitly at the end of the block.
+  TMP_CSR=$(mktemp /tmp/oc-int-csr.XXXXXX.pem)
+  TMP_CRT=$(mktemp /tmp/oc-int-crt.XXXXXX.pem)
+  # Extend the EXIT trap to also wipe these tmp files.
   trap 'rm -f "$TMP_CSR" "$TMP_CRT"; cleanup' EXIT INT TERM
-  printf '%s' "$CSR" > "$TMP_CSR"
 
+  # Step 1: generate the intermediate CSR. `-field=csr` outputs raw PEM
+  # to stdout (no JSON wrapping); redirect to file directly.
+  vault_exec write -field=csr pki_int/intermediate/generate/internal \
+    common_name="openclaw internal intermediate CA" \
+    key_type=ed25519 > "$TMP_CSR"
+  [[ -s "$TMP_CSR" ]] || die "Empty CSR from pki_int/intermediate/generate/internal"
+
+  # Step 2: copy CSR into the container and ask the root CA to sign it.
   docker cp "$TMP_CSR" oc-vault:/tmp/int.csr >/dev/null
-  vault_exec write -format=json pki_root/root/sign-intermediate \
+  vault_exec write -field=certificate pki_root/root/sign-intermediate \
     csr=@/tmp/int.csr \
     format=pem_bundle \
-    ttl=8760h \
-    | grep -oE '"certificate":[[:space:]]*"[^"]*"' \
-    | sed 's/^"certificate":[[:space:]]*"//; s/"$//' \
-    | sed 's/\\n/\n/g' > "$TMP_CRT"
+    ttl=8760h > "$TMP_CRT"
+  [[ -s "$TMP_CRT" ]] || die "Empty signed cert from pki_root/root/sign-intermediate"
 
+  # Step 3: copy the signed cert back into the container and set it on
+  # the intermediate so pki_int now has a chain rooted at pki_root.
   docker cp "$TMP_CRT" oc-vault:/tmp/int.crt >/dev/null
   vault_exec write pki_int/intermediate/set-signed certificate=@/tmp/int.crt >/dev/null
 
-  docker exec oc-vault rm -f /tmp/csr.json /tmp/int.csr /tmp/int.crt
-  rm -f "$TMP_CSR" "$TMP_CRT"
+  # Cleanup (container-side; host-side handled by EXIT trap)
+  docker exec oc-vault rm -f /tmp/int.csr /tmp/int.crt
 else
   log "  Intermediate CA already exists, skipping"
 fi
