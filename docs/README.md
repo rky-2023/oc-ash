@@ -9,10 +9,11 @@ Project documentation.
 - `phases/` — per-phase implementation runbooks. Each file (`phase-N.md`) contains the concrete task list, exit criteria, and rollback procedures for that phase. ADRs say *what and why*; runbooks say *how, in what order, and how to verify*.
 
   Available runbooks:
-  - [`phases/phase-1.md`](./phases/phase-1.md) — Secrets foundation & identity (Vault Shamir-only unseal, internal CA, WebAuthn + YubiKey enrollment, vault-agent sidecars, transit signing keys, 5-test mTLS smoke).
+  - [`phases/phase-1.md`](./phases/phase-1.md) — Secrets foundation & identity (Vault Shamir-only unseal, internal CA, WebAuthn enrollment with platform-authenticator interim mode or YubiKey steady-state, vault-agent sidecars, transit signing keys, 5-test mTLS smoke).
   - [`phases/phase-2.md`](./phases/phase-2.md) — openclaw-core skeleton + NATS JetStream + immudb audit ledger (envelope signer, OPA redaction pre-append, audit-appender + projector, Next.js viewer, `oc` CLI, attestations repo + daily Merkle root publisher).
+  - [`phases/phase-3.md`](./phases/phase-3.md) — Event ingestion (Rust fswatch, git hooks bootstrap across `/home/asher/*` repos, Claude Code hooks via Unix socket, GitHub polling worker per ADR-004, ingest filter rego, 5-test smoke).
 
-  Subsequent phases (3–12) will get runbooks as they enter scope.
+  Subsequent phases (4–12) will get runbooks as they enter scope.
 
 **ADR conventions:**
 - Filename: `ADR-NNN-kebab-case-title.md` (zero-padded).

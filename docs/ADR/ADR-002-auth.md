@@ -159,7 +159,53 @@ If a question's answer is unclear, default to Vault. Adding a value to Vault lat
 
 **Rationale for the split.** A flat "all secrets in Vault" rule led to a fair concern from the operator: Vault feels heavy for a personal system, and Ashboard's Postgres is already running. A flat "all secrets in Postgres" rule, on the other hand, regresses every claim in this ADR — the GitHub App private key, the audit signing keys, and the OAuth refresh tokens are precisely the things Vault transit / KV is designed for, and Postgres has no equivalent of "sign without exposing." The split keeps Vault's surface tight (a dozen-ish keys + a dozen-ish KV paths) while letting boring lookup data live where it's most ergonomic.
 
-### D13. Rotation cadence.
+### D13. Interim auth mode — platform authenticators until YubiKey procurement.
+
+**Status:** Active interim. D2 (two YubiKeys) remains the **target steady-state**. D14 is a documented temporary deviation, not a replacement for D2.
+
+**What's allowed during the interim:**
+
+- Authentication via a **platform authenticator** instead of a YubiKey:
+  - macOS Touch ID (Secure Enclave)
+  - Windows Hello (TPM 2.0)
+  - Linux `libfido2` + TPM 2.0 (most laptops since ~2018)
+  - ChromeOS built-in WebAuthn (TPM-backed)
+- The platform authenticator must support **resident keys** and **user verification** — Touch ID, Windows Hello PIN, and Linux TPM2 with PIN all qualify. SSH-key-only or password-only do not qualify and are still refused.
+- Multiple platform authenticators may be enrolled (laptop + phone + tablet) to recover the "two enrolled authenticators" property of D3 in software form.
+
+**What we keep from the steady-state design:**
+
+- Origin-pinned WebAuthn — phishing resistance unchanged.
+- Hardware-backed credential storage — Secure Enclave / TPM is non-extractable to userspace.
+- User verification on every authentication — biometric or device PIN required.
+- Refresh-with-touch (D5) — each platform authenticator still requires its UV gesture on every refresh.
+- Shamir-only Vault recovery (ADR-001 R1) — unchanged.
+
+**What we lose compared to D2:**
+
+- **Portability.** The credential is bound to the device's secure element. Losing the laptop = losing that authenticator. Adding a second device requires a separate enrollment, not a key transfer.
+- **Geographic separation of authenticators.** A single laptop is one physical object; two YubiKeys (primary + safe spare) are two. The "one safe, one on person" survival property doesn't translate.
+- **Auditability of presence.** A YubiKey touch is a discrete physical event. Touch ID / Windows Hello touch happens on the same device that the attacker may already be on if the device is compromised — the touch is meaningful but slightly less so than a separate hardware token.
+
+**Migration trigger back to D2:**
+
+When YubiKeys are procured, the following happens in order, on the same admin session:
+
+1. Enroll YubiKey #1 as an additional authenticator (does not displace the platform one).
+2. Enroll YubiKey #2 as an additional authenticator.
+3. Verify login works from each YubiKey.
+4. **Optionally revoke the platform authenticator** with `oc auth revoke-key <credential-id>`. Two reasonable choices:
+   - **Conservative:** revoke platform authenticators immediately; YubiKeys become the only auth method (returns to strict D2/D3 compliance).
+   - **Pragmatic:** leave one platform authenticator enrolled as a third backup. Mildly violates D3 (more than 2 enrolled), but recovers if both YubiKeys are inaccessible at the same moment. Pick this if D3's two-key strictness is a hassle.
+
+The migration takes ~5 minutes once hardware arrives.
+
+**Why we keep this addendum even after migration:**
+
+- It documents that for some window of openclaw's life, auth was platform-authenticator-only. That period's audit log entries should be readable in context.
+- If openclaw is ever set up by another operator (or a future second user), the interim mode is the natural bootstrap path.
+
+### D14. Rotation cadence.
 
 | Material | Cadence | Trigger |
 |---|---|---|
@@ -244,3 +290,4 @@ Rejected. Biometric prompts on a laptop browser are tied to the platform's biome
 
 - **2026-05-23 (v1)** — Accepted as drafted.
 - **2026-05-23 (v1.1)** — Added D12 (Secret-vs-config split) per operator feedback: Vault retains all high-value material (transit signing keys, OAuth refresh tokens, DB credentials, AppRole secret_ids); Postgres `openclaw.lookup` schema holds low-value config that is public-by-design (OAuth client IDs, App IDs, FCM project IDs, repo configs, notification rules, RP config). D8 cross-references D12. Original D12 (rotation cadence) is now D13.
+- **2026-05-23 (v1.2)** — Added D13 (Interim auth mode): platform authenticators (Touch ID / Windows Hello / Linux libfido2+TPM2) accepted as a temporary deviation from D2's two-YubiKey requirement until hardware is procured. Honest framing of regression + explicit migration trigger documented. Rotation cadence renumbered D13 → D14.

@@ -201,6 +201,9 @@ A self-hosted personal agent fabric on `/home/asher` that:
 
 ## Phase 3 — Event ingestion (all four sources) (4–5 days)
 
+> **Implementation runbook:** [`docs/phases/phase-3.md`](./docs/phases/phase-3.md) — 7-step task list, exit criteria, rollback procedures.
+> **Related ADR:** [`docs/ADR/ADR-004-public-ingress.md`](./docs/ADR/ADR-004-public-ingress.md) — defer-and-poll for GitHub.
+
 **Goal.** Every interesting thing that happens under `/home/asher/` lands on the bus.
 
 **Components.**
@@ -447,3 +450,4 @@ Still open:
 - **2026-05-23 (v1.2)** — Phase 1 implementation runbook linked at `docs/phases/phase-1.md`. Pattern: each phase will get its own runbook under `docs/phases/`.
 - **2026-05-23 (v1.3)** — Phase 2 implementation runbook linked at `docs/phases/phase-2.md`.
 - **2026-05-23 (v1.4)** — Phase 10 attestations note updated: private repo (per ADR-001 R2 amendment); ADR-002 D12 added (secret-vs-config split: Vault for high-value, Postgres `openclaw.lookup` for low-value config).
+- **2026-05-23 (v1.5)** — Phase 3 implementation runbook linked at `docs/phases/phase-3.md`. ADR-004 (defer-and-poll public-ingress) referenced in Phase 3. ADR-002 D13 added (interim platform-authenticator auth mode pending YubiKey procurement).
