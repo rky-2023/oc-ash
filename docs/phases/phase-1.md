@@ -68,16 +68,18 @@ Each task is independently completable and verifiable. Tasks marked **[hands-on]
 
 ### 1.1 Prep the dm-crypt volumes for openclaw services
 
-**Why:** Vault, immudb, NATS, and MinIO all hold sensitive data. We want them on dedicated encrypted volumes so that even a host backup tool that grabs `/var/lib/openclaw/` can't see the wrapped bytes without the LUKS passphrase.
+**Why:** Vault, immudb, NATS, and MinIO all hold sensitive data. We want them on dedicated encrypted volumes so that even a host backup tool that grabs the data directories can't see the wrapped bytes without the LUKS passphrase.
 
-**Script:** [`infra/scripts/00-create-luks-volumes.sh`](../../infra/scripts/00-create-luks-volumes.sh) — creates 4 LUKS-on-file containers (vault 8 GiB / immudb 50 GiB / nats 20 GiB / minio 50 GiB), one shared bootstrap passphrase, mounts under `/var/lib/openclaw/<name>/`. Idempotent.
+**Layout (post-fix for snap Docker):** the LUKS image files live at `/var/lib/openclaw/luks/<service>.img`, and the unlocked decrypted filesystems are mounted at `/mnt/openclaw/<service>/`. Mount points live under `/mnt/` because snap-installed Docker is confined and cannot see `/var/lib/`; the LUKS images stay under `/var/lib/` because Docker doesn't need access to them.
+
+**Script:** [`infra/scripts/00-create-luks-volumes.sh`](../../infra/scripts/00-create-luks-volumes.sh) — creates 4 LUKS-on-file containers (vault 8 GiB / immudb 50 GiB / nats 20 GiB / minio 50 GiB), one shared bootstrap passphrase, mounts under `/mnt/openclaw/<name>/`. Idempotent.
 
 **Steps:**
 1. Run as root: `sudo ./infra/scripts/00-create-luks-volumes.sh`
 2. The script prompts for a single bootstrap passphrase used across all 4 volumes. Save this passphrase in your password manager **separately** from your Shamir shares — disk unlock and Vault unseal are independent ceremonies on purpose.
 3. After the script completes, set up `/etc/crypttab` + `/etc/fstab` entries (the script prints templates) so the volumes prompt-mount on boot.
 
-**Verify:** `cryptsetup status oc-vault-luks` shows the mapping active and the cipher is `aes-xts-plain64`. `mountpoint /var/lib/openclaw/vault` returns success.
+**Verify:** `cryptsetup status oc-vault-luks` shows the mapping active and the cipher is `aes-xts-plain64`. `mountpoint /mnt/openclaw/vault` returns success.
 
 **Per-volume passphrase rotation (optional, later):** if you want different passphrases per volume, use `cryptsetup luksAddKey <img>` + `luksRemoveKey` after bootstrap. The LUKS header has 8 key slots.
 
@@ -384,7 +386,7 @@ If something goes wrong mid-Phase-1, options in order of preference:
 
 1. **Re-run the affected sub-step.** Most steps are idempotent.
 2. **`vault operator seal` and rebuild.** If Vault config is wrong, sealing it loses no data; correct the config and unseal again.
-3. **Wipe and re-init Vault.** If the bootstrap genuinely went sideways (e.g., you lost the unseal shares before distributing them), `systemctl stop vault`, `rm -rf /var/lib/openclaw/vault/*`, restart, re-init. **You lose nothing because Phase 1 hasn't put anything irreplaceable in Vault yet.** This is *only* safe before downstream services start using the secrets — once Phase 2 starts wiring up immudb signing keys, Vault wipe means signing-key loss.
+3. **Wipe and re-init Vault.** If the bootstrap genuinely went sideways (e.g., you lost the unseal shares before distributing them), `docker compose stop vault`, `rm -rf /mnt/openclaw/vault/*`, `docker compose start vault`, re-init. **You lose nothing because Phase 1 hasn't put anything irreplaceable in Vault yet.** This is *only* safe before downstream services start using the secrets — once Phase 2 starts wiring up immudb signing keys, Vault wipe means signing-key loss.
 
 The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then move forward.
 
@@ -411,3 +413,4 @@ The point: keep Phase 1 **wipe-safe** until you're confident in the setup, then 
 - **2026-05-23 (v1.1)** — Task 1.5 Vault path layout aligned with ADR-002 D12 (Secret-vs-config split): public-by-design lookups (client_id, app_id, installation_ids, rp_id, FCM project IDs, redaction policy hash) moved out of `kv/openclaw/` and into the Postgres `openclaw.lookup` schema (created in Phase 2 task 2.1).
 - **2026-05-23 (v1.2)** — Prerequisites restructured into "steady-state hardware" (ADR-002 D2) and "cost-free interim" (ADR-002 D13) tracks. Cost-free Shamir distribution table added with concrete locations and hard rules. Tasks 1.9/1.10 split into 1.9a/1.9b/1.10a/1.10b reflecting interim platform-authenticator path and steady-state YubiKey path.
 - **2026-05-23 (v1.3)** — Tasks 1.1, 1.2, 1.3 rewritten to reference the new `infra/scripts/` helpers (00-create-luks-volumes / 01-bring-up-vault / 02-init-vault / 03-unseal-vault). 1.1 expanded to cover all 4 dm-crypt volumes (vault + immudb + nats + minio) since Phase 2 needs them too. 1.2 reframed: Vault runs as a docker-compose container, not a host systemd unit, matching the Phase 2 scaffold.
+- **2026-05-23 (v1.4)** — Task 1.1 mount points moved from `/var/lib/openclaw/<svc>/` to `/mnt/openclaw/<svc>/` because snap-installed Docker is confined and cannot see `/var/lib/`. LUKS image files remain at `/var/lib/openclaw/luks/<svc>.img` (Docker never accesses those). Docker-compose bind-mount paths and rollback procedure 3 updated accordingly.
