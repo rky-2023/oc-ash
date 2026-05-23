@@ -22,6 +22,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.audit.appender import get_appender
+from app.audit.immudb_writer import get_writer
 from app.audit.middleware import AuditMiddleware
 from app.auth.router import router as auth_router
 from app.bus.nats_client import get_bus
@@ -54,16 +56,41 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.bus = bus
 
-    # Phase 2 task 2.6+ TODO:
-    #   - open immudb client (will live in core's audit-appender service,
-    #     not in the core HTTP service itself — keeps the HTTP path lean)
-    #   - read non-Vault secrets from settings.secrets_dir (rendered by
-    #     vault-agent sidecar — Phase 2 task 2.5b)
-    #   - swap signer to use Vault transit/sign/audit-service
+    # immudb writer + audit-appender. Both are optional — if immudb is
+    # unreachable or credentials aren't set, we log loudly and continue
+    # without the audit-write half of the pipeline (the front-end NATS
+    # publish still works).
+    writer = get_writer()
+    appender = get_appender()
+    if settings.enable_audit_appender and settings.immudb_password:
+        try:
+            await writer.connect()
+            await appender.start()
+        except Exception as e:
+            log.warning(
+                "audit_appender.start_failed",
+                err=str(e),
+                note="envelopes will sit on NATS until appender comes up",
+            )
+    else:
+        log.info(
+            "audit_appender.disabled",
+            enable=settings.enable_audit_appender,
+            has_password=bool(settings.immudb_password),
+        )
+    app.state.writer = writer
+    app.state.appender = appender
+
+    # Phase 2 follow-ups (separate PRs):
+    #   - Swap signer to Vault transit/sign/audit-service (sigs survive restart).
+    #   - Add Postgres connection for openclaw.lookup reads.
+    #   - vault-agent sidecar for live cert + secret rotation.
 
     yield
 
     log.info("openclaw-core shutting down")
+    await appender.stop()
+    await writer.close()
     await bus.close()
 
 

@@ -260,7 +260,44 @@ Pre-chown of `/mnt/openclaw/nats` to uid 1000. NATS server image is also minimal
 
 ---
 
-### 2.8 Build the audit-appender service
+### 2.8 Build the audit-appender service  🟡 MVP in-process 2026-05-23
+
+**Status:** the appender runs as a background task INSIDE the openclaw-core process for MVP. Per ADR-003 D3 the canonical design is a separate service — that split happens in Phase 11 hardening (or earlier if needed). The `appender.py` module's interface is intentionally narrow so the in-process → separate-container refactor is a straightforward extraction.
+
+**Files:**
+
+| File | What |
+|---|---|
+| `core/app/audit/immudb_writer.py` | Async wrapper around immudb-py (sync client → asyncio.to_thread). Single connection, thread-locked. `set_envelope(key, value)` returns the immudb tx id. `get_latest_key()` for prev_hash chain seeding on restart. |
+| `core/app/audit/appender.py` | `AuditAppender` background task. Subscribes to `oc.event.>` / `oc.a2a.>` / `oc.mcp.>` / `oc.notify.>` via durable JetStream consumers (deliberately NOT `oc.health.>` — those are pings). Per message: parse → verify sig_service → fill prev_hash from in-memory chain head → sign sig_appender → write to immudb → update chain head → ACK NATS. NACK on immudb write failures (NATS will redeliver). |
+| `core/app/main.py` | Lifespan brings up writer + appender if `settings.enable_audit_appender` is true AND `OC_IMMUDB_PASSWORD` is set. Otherwise both stay no-ops; front-end NATS publishes still work. |
+| `core/app/config.py` | New env settings: `OC_IMMUDB_USER` (default `appender`), `OC_IMMUDB_PASSWORD`, `OC_IMMUDB_DATABASE` (default `openclaw_audit`), `OC_ENABLE_AUDIT_APPENDER`. |
+| `core/scripts/run-with-vault-creds.sh` | Wrapper: prompts for openclaw-admin AppRole, fetches `kv/openclaw/immudb/appender` password from Vault, exports env, execs uvicorn. MVP stand-in for the vault-agent sidecar of Phase 2 task 2.5b. |
+| `core/tests/test_appender_lifecycle.py` | 3 sanity tests: stop-without-start is no-op, subject list matches ADR-001 D3 taxonomy, envelope canonical sha256 returns `sha256:<64-hex>`. End-to-end "envelope lands in immudb" lives in integration tests (future). |
+
+**Running it:**
+
+```sh
+cd /home/asher/openclaw/core
+./scripts/run-with-vault-creds.sh
+# Prompts for openclaw-admin Role ID + Secret ID once.
+# Fetches immudb appender password from Vault.
+# Launches uvicorn with all required env.
+```
+
+Hit any non-skip-listed endpoint (`curl https://...:8000/auth/health`); two envelopes should land on `oc.event.core.request.get` + `oc.event.core.response.get`, then propagate through the appender into immudb. Verify with:
+
+```sh
+docker exec -it oc-immudb immuadmin login immudb        # admin pw from Vault
+docker exec oc-immudb immuadmin database use openclaw_audit
+# Within the immuclient REPL, scan for keys — they'll be ULIDs.
+```
+
+**Deferred** (Phase 2 follow-ups):
+- Swap signer to Vault `transit/sign/audit-{service,appender}` so signatures persist across core restarts.
+- Extract appender into its own container per ADR-003 D3.
+- Implement paranoid-mode trigger when immudb lag >24h (ADR-003 D4).
+- Postgres projection (task 2.9) reads from immudb to populate `openclaw.audit_*` tables for the viewer.
 
 **Why:** Phase B of the two-phase append (ADR-003 D3). NATS already gives durability; this service gives cryptographic anchoring.
 

@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     def webauthn_expected_origins(self) -> list[str]:
         return [s.strip() for s in self.webauthn_expected_origins_csv.split(",") if s.strip()]
 
+    # ── immudb — populated by core/scripts/run-with-vault-creds.sh ────
+    # (or by hand: export OC_IMMUDB_PASSWORD=<from-vault>).
+    # Phase 2 task 2.5b will fetch these via a vault-agent sidecar.
+    immudb_user: str = Field(default="appender")
+    immudb_password: str = Field(default="")
+    immudb_database: str = Field(default="openclaw_audit")
+    enable_audit_appender: bool = Field(
+        default=True,
+        description="Run the audit-appender background task inside core. Disable in tests.",
+    )
+
 
 # Singleton — instantiated once on import. Don't recreate; mutate the env
 # instead and restart the process if you need to change config (intentional).
