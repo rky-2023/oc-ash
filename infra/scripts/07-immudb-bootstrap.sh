@@ -29,26 +29,39 @@ INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 mountpoint -q /mnt/openclaw/immudb || die "/mnt/openclaw/immudb not mounted. Run 00 first."
 
+# ── Chown the bind target BEFORE container start ───────────────────
+# The codenotary/immudb container runs as user immudb (uid 3322). The
+# LUKS-mount target is root:root mode 700 by default — immudb can't
+# write there and exits 2 right after its startup banner.
+# This step must happen on the HOST as root, BEFORE `compose up`,
+# because by the time the container is up we'd be trying to fix
+# things from inside a crash-looping process.
+log "Setting /mnt/openclaw/immudb ownership to immudb uid (3322:3322, mode 700)"
+chown -R 3322:3322 /mnt/openclaw/immudb
+chmod 700 /mnt/openclaw/immudb
+
 # ── Bring up immudb if not already running ──────────────────────────
 if ! docker ps --format '{{.Names}}' | grep -qx oc-immudb; then
   log "Starting oc-immudb..."
   docker compose --env-file "$INFRA_DIR/.env.openclaw" \
     -f "$INFRA_DIR/docker-compose.openclaw.yml" up -d immudb
-  sleep 5
 fi
 
-# Wait for immuadmin to be reachable
-log "Waiting for immudb to be reachable..."
+# Wait for the gRPC listener on 3322 to actually accept connections.
+# Listening != restarting; we check via `nc` or a real client probe.
+log "Waiting for immudb gRPC listener at :3322 to accept connections..."
+ready=false
 for i in $(seq 1 30); do
-  if docker exec oc-immudb sh -c 'echo q | immuadmin login immudb 2>&1' \
-       | grep -q -E '(password|Password)'; then
+  # If the container is currently in a restart loop, docker exec returns
+  # an error — treat that as "not yet ready" and keep waiting.
+  if docker exec oc-immudb sh -c 'echo > /dev/tcp/127.0.0.1/3322' 2>/dev/null; then
+    ready=true
     break
   fi
   sleep 1
 done
-
-# Fix ownership of mount point if needed (immudb container's default uid)
-docker exec -u 0 oc-immudb chown -R 3322:3322 /var/lib/immudb 2>/dev/null || true
+$ready || die "immudb didn't open port 3322 in 30s — check 'docker logs oc-immudb'."
+log "immudb is listening."
 
 # ── AppRole login to Vault ──────────────────────────────────────────
 echo
@@ -121,7 +134,7 @@ docker exec -i oc-immudb sh -c "
   immuadmin login immudb <<< '$NEW_ADMIN_PW' >/dev/null 2>&1
   immuadmin database list 2>/dev/null | grep -q openclaw_audit \
     || immuadmin database create openclaw_audit >/dev/null
-" || warn "database creation step had a soft error"
+" || die "database creation failed — check immudb logs"
 log "  ✓ database openclaw_audit ready"
 
 # ── Create appender user (R/W) ──────────────────────────────────────
@@ -140,7 +153,7 @@ EOF
 $APPENDER_PW
 $APPENDER_PW
 EOF
-  " || warn "Could not rotate appender password — Vault value may be stale"
+  " || die "Could not rotate appender password — Vault value would be stale; aborting."
 }
 vault_kv_put kv/openclaw/immudb/appender password "$APPENDER_PW"
 log "  ✓ appender password stored in Vault"
@@ -161,7 +174,7 @@ EOF
 $PROJECTOR_PW
 $PROJECTOR_PW
 EOF
-  " || warn "Could not rotate projector password"
+  " || die "Could not rotate projector password — Vault value would be stale; aborting."
 }
 vault_kv_put kv/openclaw/immudb/projector password "$PROJECTOR_PW"
 log "  ✓ projector password stored in Vault"
