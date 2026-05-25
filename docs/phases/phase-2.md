@@ -558,7 +558,7 @@ pip install -e .                          # picks up the new oc entrypoint
 
 ---
 
-### 2.13 Build the attestation-publisher job  🟡 CLI shipped; systemd timer + retry logic deferred to Phase 3
+### 2.13 Build the attestation-publisher job  ✅ executed 2026-05-26 — first attestation committed to openclaw-attestations (commit b026a55)
 
 **Why:** The daily public Merkle root (ADR-003 D7) is what makes the audit ledger externally tamper-evident. Without this, the rest of Phase 2 is just an expensive log.
 
