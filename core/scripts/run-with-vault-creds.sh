@@ -46,6 +46,19 @@ IMMUDB_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
 [[ -n "$IMMUDB_PW" ]] || die "Could not fetch kv/openclaw/immudb/appender"
 log "Fetched immudb appender password from Vault."
 
+PG_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+  vault kv get -field=password kv/openclaw/postgres/app 2>/dev/null || true)
+if [[ -n "$PG_PW" ]]; then
+  PG_HOST="${OC_PG_HOST:-127.0.0.1}"
+  PG_PORT="${OC_PG_PORT:-5432}"
+  PG_DBNAME="${OC_PG_DBNAME:-ashboard}"
+  export OC_POSTGRES_DSN="postgresql://openclaw_app:${PG_PW}@${PG_HOST}:${PG_PORT}/${PG_DBNAME}"
+  PG_PW=""
+  log "Fetched Postgres DSN from Vault."
+else
+  log "(kv/openclaw/postgres/app not set — projector will be disabled)"
+fi
+
 # Export the Vault token so the core service can call transit/sign.
 # TTL is 15 min (AppRole token_ttl) — restart the service to refresh.
 # Phase 2 task 2.5b (vault-agent sidecar) will handle auto-renewal.
