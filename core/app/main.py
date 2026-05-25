@@ -30,6 +30,8 @@ from app.auth.router import router as auth_router
 from app.bus.nats_client import get_bus
 from app.config import settings
 from app.health import router as health_router
+from app.views.audit import close_pool as close_audit_pool
+from app.views.audit import router as audit_router
 
 log = structlog.get_logger(__name__)
 
@@ -109,6 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await appender.stop()
     await writer.close()
     await bus.close()
+    await close_audit_pool()
 
 
 def create_app() -> FastAPI:
@@ -128,6 +131,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(audit_router)
 
     # Serve the minimal HTML/JS pages used for WebAuthn enrollment + login.
     # Phase 1 task 1.8 ships these inline with the API service; Phase 9

@@ -418,7 +418,49 @@ export OC_POSTGRES_DSN="$PG_DSN"
 
 ---
 
-### 2.10 Build the audit viewer (Next.js, read-only)
+### 2.10 Build the audit viewer (Next.js, read-only)  🟡 MVP 2026-05-24
+
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `core/app/views/audit.py` | FastAPI JSON API — 5 endpoints (entries list/detail, conversations list/detail, verify). All reads from Postgres. Lazy asyncpg pool, closed in lifespan. |
+| `core/app/main.py` | Wired `audit_router` + `close_audit_pool` into lifespan. |
+| `core/scripts/run-with-vault-creds.sh` | Fetches `kv/openclaw/postgres/app` password, constructs and exports `OC_POSTGRES_DSN` so the projector starts. |
+| `audit/viewer/` | Next.js 14 App Router (TypeScript). |
+| `audit/viewer/lib/api.ts` | Typed fetch wrappers for all 5 API endpoints. |
+| `audit/viewer/lib/types.ts` | TypeScript types matching FastAPI response models. |
+| `audit/viewer/app/page.tsx` | `/` — recent 200 entries, paginated, sig badges. |
+| `audit/viewer/app/conv/[conv_id]/page.tsx` | `/conv/:id` — full conversation ladder diagram. |
+| `audit/viewer/app/entry/[ulid]/page.tsx` | `/entry/:ulid` — single entry detail + integrity status. |
+| `audit/viewer/app/verify/page.tsx` | `/verify` — server-side chain verification with date picker. |
+
+**API endpoints (on core FastAPI):**
+```
+GET /api/audit/entries?limit&offset&subject  → EntryRow[]
+GET /api/audit/entries/{ulid}                → EntryRow (with raw_envelope)
+GET /api/audit/conversations?limit&offset    → ConversationRow[]
+GET /api/audit/conversations/{conv_id}       → EntryRow[]
+GET /api/audit/verify?date                   → VerifyResult
+```
+
+**Run the viewer:**
+```sh
+cd audit/viewer
+cp .env.example .env.local
+# Edit .env.local: OC_API_BASE=https://<tailnet-host>:8000
+pnpm install   # or npm install
+pnpm dev       # http://localhost:3000
+```
+
+**Deferred:**
+- mTLS gate (Phase 11 hardening — the tailnet already provides network-level isolation).
+- "Reveal" button on encrypted blobs — needs Phase 1 task 1.9 YubiKey enrollment first.
+- `oc audit replay` / `oc audit verify` `--fast` flag wired to Postgres (task 2.14).
+
+---
+
+### 2.10-original Build the audit viewer (Next.js, read-only)
 
 **Why:** Human eyes on the audit log. Two views per ADR-001 D4 / PLAN.md Phase 2: structured + narrative.
 

@@ -1,0 +1,60 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  background: #0d1117;
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+nav {
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  padding: 10px 24px;
+  display: flex;
+  gap: 24px;
+  align-items: center;
+}
+nav strong { color: #e6edf3; font-size: 14px; }
+
+.page { max-width: 1200px; margin: 0 auto; padding: 24px; }
+h1 { color: #e6edf3; font-size: 16px; margin-bottom: 16px; }
+h2 { color: #8b949e; font-size: 13px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: .05em; }
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; padding: 6px 10px;
+  border-bottom: 1px solid #30363d;
+  color: #8b949e; font-weight: 500;
+}
+td { padding: 5px 10px; border-bottom: 1px solid #21262d; vertical-align: top; }
+tr:hover td { background: #161b22; }
+
+.badge {
+  display: inline-block; padding: 1px 6px; border-radius: 10px;
+  font-size: 11px; font-weight: 600;
+}
+.ok   { background: #1a4731; color: #3fb950; }
+.fail { background: #4b1c1c; color: #f85149; }
+.warn { background: #3d2f05; color: #e3b341; }
+.na   { background: #21262d; color: #8b949e; }
+
+.mono { font-family: inherit; font-size: 11px; color: #8b949e; }
+.ts   { white-space: nowrap; color: #8b949e; }
+
+pre {
+  background: #161b22; border: 1px solid #30363d;
+  border-radius: 6px; padding: 12px;
+  overflow: auto; font-size: 11px; line-height: 1.5;
+}
+
+.pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+
+.ladder { border-left: 2px solid #30363d; padding-left: 16px; }
+.ladder-entry { margin-bottom: 14px; }
+.ladder-entry .meta { color: #8b949e; font-size: 11px; }
+.ladder-entry .subj { color: #58a6ff; }
