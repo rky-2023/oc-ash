@@ -58,7 +58,7 @@ if [[ -z "${OC_IMMUDB_PASSWORD:-}" ]]; then
   PG_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
     vault kv get -field=password kv/openclaw/postgres/app)
   if [[ -n "$PG_PW" ]]; then
-    export OC_POSTGRES_DSN="postgresql://openclaw_app:${PG_PW}@${OC_PG_HOST:-127.0.0.1}:${OC_PG_PORT:-5432}/${OC_PG_DBNAME:-ashboard}"
+    export OC_POSTGRES_DSN="postgresql://openclaw_app:${PG_PW}@${OC_PG_HOST:-127.0.0.1}:${OC_PG_PORT:-5432}/${OC_PG_DBNAME:-postgres}"
     log "Fetched Postgres DSN from Vault."
   fi
   PG_PW=""
