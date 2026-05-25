@@ -534,7 +534,7 @@ pip install -e .                          # picks up the new oc entrypoint
 
 ---
 
-### 2.12 Create the `openclaw-attestations` GitHub repo and the App credential  🟡 partial — repo public, bootstrap script shipped; GitHub App creation hands-on
+### 2.12 Create the `openclaw-attestations` GitHub repo and the App credential  ✅ executed 2026-05-25
 
 **Why:** ADR-003 D7 needs an external publish target. The attestation publisher (next task) needs a credential to push.
 
