@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Wrapper: fetch the immudb projector password from Vault using the
-# openclaw-admin AppRole, then exec `oc` with the right env.
+# Wrapper: fetch immudb + Postgres + GitHub App credentials from Vault
+# using the openclaw-admin AppRole, then exec `oc` with the right env.
 #
 # Pattern mirrors run-with-vault-creds.sh but uses the read-only
-# `projector` immudb credentials, suitable for CLI inspection
-# commands (audit tail / replay / verify).
+# `projector` immudb credentials and also fetches GitHub App creds for
+# `oc attest publish`.
 #
 # Usage:
 #   ./scripts/oc-with-vault-creds.sh audit tail
 #   ./scripts/oc-with-vault-creds.sh audit replay <conv_id>
 #   ./scripts/oc-with-vault-creds.sh audit verify --date 2026-05-23
+#   ./scripts/oc-with-vault-creds.sh attest publish --date 2026-05-24
 
 set -euo pipefail
 
@@ -49,6 +50,30 @@ if [[ -z "${OC_IMMUDB_PASSWORD:-}" ]]; then
     vault kv get -field=password kv/openclaw/immudb/projector)
   [[ -n "$OC_IMMUDB_PASSWORD" ]] || die "Could not fetch kv/openclaw/immudb/projector"
   log "Fetched immudb projector password from Vault."
+
+  # Postgres DSN (for audit projection reads + oc attest publish)
+  PG_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+    vault kv get -field=password kv/openclaw/postgres/app)
+  if [[ -n "$PG_PW" ]]; then
+    export OC_POSTGRES_DSN="postgresql://openclaw_app:${PG_PW}@${OC_PG_HOST:-127.0.0.1}:${OC_PG_PORT:-5432}/${OC_PG_DBNAME:-ashboard}"
+    log "Fetched Postgres DSN from Vault."
+  fi
+  PG_PW=""
+
+  # GitHub App credentials (for oc attest publish)
+  GH_APP_ID=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+    vault kv get -field=value kv/openclaw/github-app/openclaw-bot/app-id 2>/dev/null || true)
+  GH_INSTALL_ID=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+    vault kv get -field=value kv/openclaw/github-app/openclaw-bot/installation-id 2>/dev/null || true)
+  GH_PEM=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+    vault kv get -field=value kv/openclaw/github-app/openclaw-bot/private-key-pem 2>/dev/null || true)
+  if [[ -n "$GH_APP_ID" && -n "$GH_PEM" ]]; then
+    export OC_GITHUB_APP_ID="$GH_APP_ID"
+    export OC_GITHUB_INSTALLATION_ID="$GH_INSTALL_ID"
+    export OC_GITHUB_APP_PRIVATE_KEY="$GH_PEM"
+    log "Fetched GitHub App credentials from Vault."
+  fi
+  GH_APP_ID="" GH_INSTALL_ID="" GH_PEM=""
 
   # Export token for transit/verify calls in `oc audit verify`.
   export OC_VAULT_TOKEN="$TOK"

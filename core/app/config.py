@@ -111,6 +111,28 @@ class Settings(BaseSettings):
         description="Run the audit-appender background task inside core. Disable in tests.",
     )
 
+    # ── GitHub App (tasks 2.12 / 2.13) ───────────────────────────────
+    # App ID and installation ID are stored in Vault KV by the bootstrap
+    # script (11-github-app-bootstrap.sh) and exported by oc-with-vault-creds.sh.
+    github_app_id: str = Field(default="")
+    github_installation_id: str = Field(default="")
+    # PEM rendered by vault-agent or exported by oc-with-vault-creds.sh.
+    github_app_private_key_file: Path = Field(
+        default=Path("/run/secrets/openclaw/github-app.pem")
+    )
+    # String override (PEM verbatim) — for manual invocations and tests.
+    github_app_private_key: str = Field(default="")
+    github_attestations_repo: str = Field(default="rky-2023/openclaw-attestations")
+    github_api_url: str = Field(default="https://api.github.com")
+
+    @property
+    def effective_github_app_private_key(self) -> str:
+        if self.github_app_private_key:
+            return self.github_app_private_key
+        if self.github_app_private_key_file.exists():
+            return self.github_app_private_key_file.read_text().strip()
+        return ""
+
 
 # Singleton — instantiated once on import. Don't recreate; mutate the env
 # instead and restart the process if you need to change config (intentional).
