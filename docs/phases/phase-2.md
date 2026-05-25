@@ -219,7 +219,42 @@ Pre-chown of `/mnt/openclaw/nats` to uid 1000. NATS server image is also minimal
 
 ---
 
-### 2.6 Build the audit envelope model + signer
+### 2.6 Vault transit signing for audit envelopes  ✅ 2026-05-24
+
+**Why:** ADR-002 D12 / ADR-003 D2. Replace the process-local HMAC key (invalidated on restart) with Vault transit Ed25519 keys that persist across restarts and auto-rotate monthly.
+
+**What changed:**
+
+| File | Change |
+|---|---|
+| `core/app/audit/signer.py` | Full rewrite. `sign_envelope` / `verify_envelope` are now async. Vault transit used when `OC_VAULT_TOKEN` is set and `OC_VAULT_SIGNING_ENABLED=true` (default). HMAC fallback when `vault_signing_enabled=false` (unit tests). Handles both `ed25519-transit:vault:v1:*` and legacy `hmac-sha256:*` sig formats so old envelopes remain verifiable during the transition. |
+| `core/app/audit/middleware.py` | `sign_envelope(...)` → `await sign_envelope(...)` (×2). |
+| `core/app/audit/appender.py` | Same; also `await verify_envelope(...)`. |
+| `core/app/cli/audit_cmds.py` | `verify_envelope(...)` → `await verify_envelope(...)` in `_run_verify`. |
+| `core/app/config.py` | Added `vault_token`, `vault_transit_key_service` (`audit-service`), `vault_transit_key_appender` (`audit-appender`), `vault_signing_enabled`. |
+| `core/scripts/run-with-vault-creds.sh` | Exports `OC_VAULT_TOKEN` (previously unset after fetching immudb creds). |
+| `core/scripts/oc-with-vault-creds.sh` | Same — exports `OC_VAULT_TOKEN` for `oc audit verify`. |
+| `infra/scripts/09-vault-transit-audit-keys.sh` | One-time bootstrap: creates `transit/keys/audit-service` and `transit/keys/audit-appender` (Ed25519, auto-rotate 30d, min-decrypt-version=1). |
+| `core/tests/conftest.py` | Sets `OC_VAULT_SIGNING_ENABLED=false` + `OC_ENABLE_AUDIT_APPENDER=false` for the whole test suite. |
+| `core/tests/test_signer.py` | 7 unit tests for the HMAC fallback path (sign/verify round-trip, tamper detection, slot independence, error cases). |
+
+**Signature wire format:**
+- `ed25519-transit:vault:v1:<base64>` — live Vault (production)
+- `hmac-sha256:<hex>` — HMAC fallback (tests / no-Vault dev)
+
+Both formats are recognised by `verify_envelope` so old envelopes stay verifiable.
+
+**Bootstrap (run once before starting core):**
+```sh
+./infra/scripts/09-vault-transit-audit-keys.sh
+```
+Then restart core via `run-with-vault-creds.sh` — it now exports `OC_VAULT_TOKEN`.
+
+**Token lifetime:** AppRole TTL is 15 min (configured in task 1.4). Restart core to refresh. Vault-agent sidecar (task 1.12) will replace this with auto-renewal.
+
+---
+
+### 2.6-original Build the audit envelope model + signer
 
 **Why:** ADR-003 D2 defines the exact envelope. Pin it now; everything else assumes it.
 

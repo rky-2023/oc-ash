@@ -71,7 +71,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 "headers_count": len(request.headers),
             },
         )
-        sign_envelope(req_env, slot="service")
+        await sign_envelope(req_env, slot="service")
         await self._publish_safe(req_subject, req_env)
 
         # ── Run the actual handler ────────────────────────────────────
@@ -92,7 +92,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 "elapsed_ms": elapsed_ms,
             },
         )
-        sign_envelope(resp_env, slot="service")
+        await sign_envelope(resp_env, slot="service")
         await self._publish_safe(resp_subject, resp_env)
 
         # Stamp the conv_id back into the response so clients can

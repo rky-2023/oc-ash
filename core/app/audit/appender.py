@@ -159,7 +159,7 @@ class AuditAppender:
             return
 
         # Verify the originating service's signature
-        if not verify_envelope(env, slot="service"):
+        if not await verify_envelope(env, slot="service"):
             log.warning(
                 "appender.invalid_service_sig",
                 ulid=env.ulid,
@@ -174,7 +174,7 @@ class AuditAppender:
             env.prev_hash = self._chain_head
 
         # Append our own signature
-        sign_envelope(env, slot="appender")
+        await sign_envelope(env, slot="appender")
 
         # Write to immudb
         try:

@@ -33,6 +33,16 @@ class Settings(BaseSettings):
 
     # ── Vault ─────────────────────────────────────────────────────────
     vault_addr: str = Field(default="http://127.0.0.1:8200")
+    # Token populated by run-with-vault-creds.sh (AppRole login).
+    # Vault-agent sidecar (task 1.12) will replace this with a
+    # short-lived file-rendered token in production.
+    vault_token: str = Field(default="")
+
+    # ── Vault transit signing (ADR-002 D12) ───────────────────────────
+    vault_transit_key_service: str = Field(default="audit-service")
+    vault_transit_key_appender: str = Field(default="audit-appender")
+    # Set to false in unit tests so they don't need a live Vault.
+    vault_signing_enabled: bool = Field(default=True)
 
     # ── Event bus ─────────────────────────────────────────────────────
     nats_url: str = Field(default="nats://nats:4222")

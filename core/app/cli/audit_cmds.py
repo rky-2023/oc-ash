@@ -176,11 +176,11 @@ async def _run_verify(target: dt.date) -> None:
                 continue
             total += 1
             # Signature checks
-            if verify_envelope(env, slot="service"):
+            if await verify_envelope(env, slot="service"):
                 ok_service += 1
             else:
                 bad_service.append(env.ulid)
-            if verify_envelope(env, slot="appender"):
+            if await verify_envelope(env, slot="appender"):
                 ok_appender += 1
             else:
                 bad_appender.append(env.ulid)

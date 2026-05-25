@@ -47,9 +47,13 @@ if [[ -z "${OC_IMMUDB_PASSWORD:-}" ]]; then
 
   OC_IMMUDB_PASSWORD=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
     vault kv get -field=password kv/openclaw/immudb/projector)
-  unset TOK
   [[ -n "$OC_IMMUDB_PASSWORD" ]] || die "Could not fetch kv/openclaw/immudb/projector"
   log "Fetched immudb projector password from Vault."
+
+  # Export token for transit/verify calls in `oc audit verify`.
+  export OC_VAULT_TOKEN="$TOK"
+  unset TOK
+  log "Vault token exported for transit verify (TTL 15 min)."
 fi
 
 export OC_IMMUDB_HOST="${OC_IMMUDB_HOST:-127.0.0.1}"
