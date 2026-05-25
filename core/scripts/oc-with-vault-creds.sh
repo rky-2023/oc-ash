@@ -47,9 +47,12 @@ if [[ -z "${OC_IMMUDB_PASSWORD:-}" ]]; then
   [[ -n "$TOK" ]] || die "Vault AppRole login failed."
 
   OC_IMMUDB_PASSWORD=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
-    vault kv get -field=password kv/openclaw/immudb/projector)
-  [[ -n "$OC_IMMUDB_PASSWORD" ]] || die "Could not fetch kv/openclaw/immudb/projector"
-  log "Fetched immudb projector password from Vault."
+    vault kv get -field=password kv/openclaw/immudb/projector 2>/dev/null || true)
+  if [[ -n "$OC_IMMUDB_PASSWORD" ]]; then
+    log "Fetched immudb projector password from Vault."
+  else
+    log "kv/openclaw/immudb/projector not found — immudb commands (audit tail/replay/verify) will be unavailable."
+  fi
 
   # Postgres DSN (for audit projection reads + oc attest publish)
   PG_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
