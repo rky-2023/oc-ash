@@ -44,8 +44,14 @@ log "Vault login OK."
 IMMUDB_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
   vault kv get -field=password kv/openclaw/immudb/appender)
 [[ -n "$IMMUDB_PW" ]] || die "Could not fetch kv/openclaw/immudb/appender"
-unset TOK
 log "Fetched immudb appender password from Vault."
+
+# Export the Vault token so the core service can call transit/sign.
+# TTL is 15 min (AppRole token_ttl) — restart the service to refresh.
+# Phase 2 task 2.5b (vault-agent sidecar) will handle auto-renewal.
+export OC_VAULT_TOKEN="$TOK"
+unset TOK
+log "Vault token exported for transit signing (TTL 15 min)."
 
 # ── Activate venv ───────────────────────────────────────────────────
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
