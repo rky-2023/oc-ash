@@ -10,6 +10,7 @@ compose healthcheck and the Phase 2 smoke tests can validate the shape.
 
 from fastapi import APIRouter, Response, status
 
+from app.audit.immudb_writer import get_writer
 from app.bus.nats_client import get_bus
 
 router = APIRouter(tags=["health"])
@@ -38,11 +39,13 @@ async def health_deps(response: Response) -> dict[str, object]:
     but envelopes are dropped — see middleware._publish_safe).
     """
     bus = get_bus()
+    writer = get_writer()
     nats_status = await bus.health_check()
+    immudb_status = "ok" if writer.is_connected else "disconnected"
 
     deps_status = {
         "nats": nats_status,
-        "immudb": "not-yet-wired",
+        "immudb": immudb_status,
         "postgres": "not-yet-wired",
         "vault": "not-yet-wired",
         "opa": "not-yet-wired",

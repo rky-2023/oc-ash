@@ -260,7 +260,44 @@ Pre-chown of `/mnt/openclaw/nats` to uid 1000. NATS server image is also minimal
 
 ---
 
-### 2.8 Build the audit-appender service
+### 2.8 Build the audit-appender service  🟡 MVP in-process 2026-05-23
+
+**Status:** the appender runs as a background task INSIDE the openclaw-core process for MVP. Per ADR-003 D3 the canonical design is a separate service — that split happens in Phase 11 hardening (or earlier if needed). The `appender.py` module's interface is intentionally narrow so the in-process → separate-container refactor is a straightforward extraction.
+
+**Files:**
+
+| File | What |
+|---|---|
+| `core/app/audit/immudb_writer.py` | Async wrapper around immudb-py (sync client → asyncio.to_thread). Single connection, thread-locked. `set_envelope(key, value)` returns the immudb tx id. `get_latest_key()` for prev_hash chain seeding on restart. |
+| `core/app/audit/appender.py` | `AuditAppender` background task. Subscribes to `oc.event.>` / `oc.a2a.>` / `oc.mcp.>` / `oc.notify.>` via durable JetStream consumers (deliberately NOT `oc.health.>` — those are pings). Per message: parse → verify sig_service → fill prev_hash from in-memory chain head → sign sig_appender → write to immudb → update chain head → ACK NATS. NACK on immudb write failures (NATS will redeliver). |
+| `core/app/main.py` | Lifespan brings up writer + appender if `settings.enable_audit_appender` is true AND `OC_IMMUDB_PASSWORD` is set. Otherwise both stay no-ops; front-end NATS publishes still work. |
+| `core/app/config.py` | New env settings: `OC_IMMUDB_USER` (default `appender`), `OC_IMMUDB_PASSWORD`, `OC_IMMUDB_DATABASE` (default `openclaw_audit`), `OC_ENABLE_AUDIT_APPENDER`. |
+| `core/scripts/run-with-vault-creds.sh` | Wrapper: prompts for openclaw-admin AppRole, fetches `kv/openclaw/immudb/appender` password from Vault, exports env, execs uvicorn. MVP stand-in for the vault-agent sidecar of Phase 2 task 2.5b. |
+| `core/tests/test_appender_lifecycle.py` | 3 sanity tests: stop-without-start is no-op, subject list matches ADR-001 D3 taxonomy, envelope canonical sha256 returns `sha256:<64-hex>`. End-to-end "envelope lands in immudb" lives in integration tests (future). |
+
+**Running it:**
+
+```sh
+cd /home/asher/openclaw/core
+./scripts/run-with-vault-creds.sh
+# Prompts for openclaw-admin Role ID + Secret ID once.
+# Fetches immudb appender password from Vault.
+# Launches uvicorn with all required env.
+```
+
+Hit any non-skip-listed endpoint (`curl https://...:8000/auth/health`); two envelopes should land on `oc.event.core.request.get` + `oc.event.core.response.get`, then propagate through the appender into immudb. Verify with:
+
+```sh
+docker exec -it oc-immudb immuadmin login immudb        # admin pw from Vault
+docker exec oc-immudb immuadmin database use openclaw_audit
+# Within the immuclient REPL, scan for keys — they'll be ULIDs.
+```
+
+**Deferred** (Phase 2 follow-ups):
+- Swap signer to Vault `transit/sign/audit-{service,appender}` so signatures persist across core restarts.
+- Extract appender into its own container per ADR-003 D3.
+- Implement paranoid-mode trigger when immudb lag >24h (ADR-003 D4).
+- Postgres projection (task 2.9) reads from immudb to populate `openclaw.audit_*` tables for the viewer.
 
 **Why:** Phase B of the two-phase append (ADR-003 D3). NATS already gives durability; this service gives cryptographic anchoring.
 
@@ -329,24 +366,55 @@ Pre-chown of `/mnt/openclaw/nats` to uid 1000. NATS server image is also minimal
 
 ---
 
-### 2.11 Build the `oc` CLI (audit subcommands)
+### 2.11 Build the `oc` CLI (audit subcommands)  🟡 MVP 2026-05-24
 
-**Why:** Operator-friendly verification + replay (ADR-003 D8 + D10). Lives in `audit/cli/` so it can be installed independently.
+**Why:** Operator-friendly verification + replay (ADR-003 D8 + D10). Lives in `core/app/cli/` and is exposed as a console script — installable via `pip install -e .` from the core venv.
 
-**Steps:**
-- New Python package `oc-cli` (Click or Typer based). Single binary via `pyinstaller` or `pex`.
-- Subcommands:
-  - `oc audit tail [--subject <pattern>]` — live tail from NATS (read-only NATS user).
-  - `oc audit replay <conv_id> [--narrative | --structured]` — reconstruct A2A conversation from immudb. Outputs to stdout.
-  - `oc audit verify <date>` — recompute Merkle root for the day, compare to local immudb, compare to published attestation (if attestations repo cloned locally). Returns 0 if all match, non-zero with details otherwise.
-  - `oc audit unwedge --confirm` — clears paranoid mode. Requires fresh WebAuthn assertion.
-  - `oc audit projection rebuild` — drops + replays the Postgres projection from immudb.
-- All subcommands require a valid local Vault token (cli runs as the operator, not as a service); the CLI itself does not hold long-lived credentials.
+**Status:** three core subcommands shipped — `tail`, `replay`, `verify`. Deferred subcommands (`unwedge`, `projection rebuild`, `auth login` caching) wait on the features they manage.
 
-**Verify:**
-- `oc audit tail` shows messages as they're appended.
-- `oc audit verify <yesterday>` is OK after at least 24 hours of operation.
-- `oc audit replay` reproduces the same content visible in the viewer's narrative tab.
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `core/app/cli/__init__.py` | Module-level docstring listing env contract. |
+| `core/app/cli/main.py` | Click entrypoint registered as `[project.scripts] oc = "app.cli.main:cli"`. |
+| `core/app/cli/audit_cmds.py` | `audit` subcommand group: `tail` / `replay` / `verify`. |
+| `core/app/cli/_render.py` | Pretty-printers — one-line tail summary + ladder diagram for replay (per ADR-003 D10). |
+| `core/scripts/oc-with-vault-creds.sh` | Wrapper that fetches `kv/openclaw/immudb/projector` via the openclaw-admin AppRole and execs `oc` with env injected. Skip if `OC_IMMUDB_PASSWORD` already set. |
+| `core/tests/test_cli.py` | 4 Click smoke tests — top-level help, audit-group help, version, bad-date input validation. |
+
+**Subcommands:**
+
+- `oc audit tail [--subject PATTERN] [--json]` — async NATS subscription. Default pattern `oc.>` captures everything. One-line summary by default; full envelope JSON with `--json`.
+- `oc audit replay <conv_id> [--json]` — scans immudb for envelopes with the given conv_id; renders the ADR-003 D10 ladder. `--json` switches to raw envelopes.
+- `oc audit verify [--date YYYY-MM-DD]` — iterates the day's envelopes, recomputes both signature slots + walks the prev_hash chain. Exit 0 on pass, 1 on signature/chain breaks, 2 on bad input.
+
+**Run it after merge:**
+
+```sh
+cd /home/asher/openclaw/core
+source .venv/bin/activate
+pip install -e .                          # picks up the new oc entrypoint
+
+# One-shot wrapper that fetches projector password from Vault
+./scripts/oc-with-vault-creds.sh audit tail
+# Hit your core endpoint in another terminal → envelopes scroll past here
+
+./scripts/oc-with-vault-creds.sh audit replay <conv_id>
+./scripts/oc-with-vault-creds.sh audit verify --date 2026-05-23
+```
+
+**Performance note:** `replay` and `verify` currently iterate **all** envelopes in immudb (filtering in Python). Phase 2 task 2.9's audit-projector adds the Postgres index that makes these O(matches) instead of O(total). For dev-scale ledgers (thousands of entries) the brute-force iteration is fine.
+
+**Deferred:**
+- `oc audit unwedge --confirm` — waits on paranoid-mode wiring.
+- `oc audit projection rebuild` — waits on Phase 2 task 2.9 (projector).
+- `oc auth login` token caching — currently env-var-driven via the wrapper.
+
+**Verify (against original acceptance):**
+- `oc audit tail` shows messages as they're appended. ✓
+- `oc audit verify <yesterday>` works after ≥24 h of operation. (Attestation-comparison part waits on tasks 2.12 + 2.13.)
+- `oc audit replay` outputs structured ladder; matches viewer's narrative tab once task 2.10 ships.
 
 ---
 

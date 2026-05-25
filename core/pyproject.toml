@@ -23,7 +23,11 @@ dependencies = [
     "prometheus-client>=0.21",
     "python-ulid>=2.7",
     "hvac>=2.3",
+    "click>=8.1",
 ]
+
+[project.scripts]
+oc = "app.cli.main:cli"
 
 [project.optional-dependencies]
 dev = [
