@@ -21,20 +21,34 @@ log "GitHub App bootstrap for openclaw-bot"
 log "See docs/github-app-setup.md for how to get these values."
 echo
 
-read -rp  "GitHub App ID (integer):      "         APP_ID
-read -rp  "GitHub Installation ID:        "         INSTALL_ID
-read -rp  "Path to downloaded .pem file:  "         PEM_PATH
+read -rp  "GitHub App ID (integer):                    "  APP_ID
+read -rp  "GitHub Installation ID:                     "  INSTALL_ID
+read -rp  "Path to downloaded .pem file:               "  PEM_PATH
+echo
+read -rp  "openclaw-admin Role ID:                     "  ROLE_ID
+read -srp "openclaw-admin Secret ID (will be hidden):  "  SECRET_ID; echo
 
 [[ -n "$APP_ID" && -n "$INSTALL_ID" && -n "$PEM_PATH" ]] \
-  || die "All fields are required."
+  || die "App ID, Installation ID, and PEM path are required."
+[[ -n "$ROLE_ID" && -n "$SECRET_ID" ]] \
+  || die "Vault Role ID and Secret ID are required."
 [[ -f "$PEM_PATH" ]] || die "PEM file not found: $PEM_PATH"
 
-# ── Vault write ──────────────────────────────────────────────────────────────
-VAULT_CMD="docker exec -i oc-vault vault"
-
+# ── Vault AppRole login ──────────────────────────────────────────────────────
 log "Checking Vault connectivity..."
-$VAULT_CMD status > /dev/null 2>&1 || die "oc-vault container not running or Vault sealed."
+docker exec oc-vault vault status > /dev/null 2>&1 || die "oc-vault container not running or Vault sealed."
 
+log "Logging in to Vault via AppRole..."
+TOK=$(printf '%s' "$SECRET_ID" | docker exec -i oc-vault \
+  vault write -field=token auth/approle/login \
+  role_id="$ROLE_ID" secret_id=-)
+unset SECRET_ID ROLE_ID
+[[ -n "$TOK" ]] || die "Vault AppRole login failed."
+log "Vault login OK."
+
+VAULT_CMD="docker exec -e VAULT_TOKEN=$TOK -i oc-vault vault"
+
+# ── Vault write ──────────────────────────────────────────────────────────────
 log "Writing app-id..."
 $VAULT_CMD kv put kv/openclaw/github-app/openclaw-bot/app-id \
   value="$APP_ID"
@@ -45,12 +59,14 @@ $VAULT_CMD kv put kv/openclaw/github-app/openclaw-bot/installation-id \
 
 log "Writing private-key-pem (reading from $PEM_PATH)..."
 PEM_CONTENT=$(<"$PEM_PATH")
-printf '%s' "$PEM_CONTENT" | $VAULT_CMD kv put kv/openclaw/github-app/openclaw-bot/private-key-pem \
-  value=-
+printf '%s' "$PEM_CONTENT" | docker exec -e VAULT_TOKEN="$TOK" -i oc-vault \
+  vault kv put kv/openclaw/github-app/openclaw-bot/private-key-pem value=-
 
 log "Verifying stored app-id..."
 STORED=$($VAULT_CMD kv get -field=value kv/openclaw/github-app/openclaw-bot/app-id)
 [[ "$STORED" == "$APP_ID" ]] || die "Stored app-id mismatch!"
+
+unset TOK
 
 log "Credentials stored. Shredding local PEM..."
 if command -v shred &>/dev/null; then
