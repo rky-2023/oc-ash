@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import click
 
+from app.cli.attest_cmds import attest
 from app.cli.audit_cmds import audit
 
 
@@ -21,6 +22,7 @@ def cli() -> None:
 
 
 cli.add_command(audit)
+cli.add_command(attest)
 
 
 if __name__ == "__main__":
