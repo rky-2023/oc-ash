@@ -212,7 +212,11 @@ async def commit_attestation(
     token: str,
     api_url: str,
 ) -> str:
-    """Create a commit in `repo` that adds/updates YYYY/MM/DD.json. Returns the new commit SHA."""
+    """Create a commit in `repo` that adds/updates YYYY/MM/DD.json. Returns the new commit SHA.
+
+    Handles both the normal case (branch exists) and the first-commit case
+    (repo is empty — 409 on GET refs/heads/main).
+    """
     file_path = f"{date.year}/{date.month:02d}/{date.day:02d}.json"
     content_bytes = json.dumps(doc, sort_keys=True, indent=2).encode()
     content_b64 = base64.b64encode(content_bytes).decode()
@@ -222,15 +226,22 @@ async def commit_attestation(
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # Get current HEAD SHA for main branch
-        ref_data = await _gh(client, "GET", f"/repos/{repo}/git/refs/heads/main", token, api_url)
-        head_sha = ref_data["object"]["sha"]
-
-        # Get the current tree SHA from the commit
-        commit_data = await _gh(
-            client, "GET", f"/repos/{repo}/git/commits/{head_sha}", token, api_url
-        )
-        base_tree_sha = commit_data["tree"]["sha"]
+        # Try to get current HEAD. 409 = empty repo (no commits yet).
+        head_sha: str | None = None
+        base_tree_sha: str | None = None
+        try:
+            ref_data = await _gh(
+                client, "GET", f"/repos/{repo}/git/refs/heads/main", token, api_url
+            )
+            head_sha = ref_data["object"]["sha"]
+            commit_data = await _gh(
+                client, "GET", f"/repos/{repo}/git/commits/{head_sha}", token, api_url
+            )
+            base_tree_sha = commit_data["tree"]["sha"]
+        except RuntimeError as exc:
+            if "409" not in str(exc) and "404" not in str(exc):
+                raise
+            log.info("attestation.repo_empty", repo=repo, note="creating first commit")
 
         # Create blob
         blob_data = await _gh(
@@ -243,44 +254,48 @@ async def commit_attestation(
         )
         blob_sha = blob_data["sha"]
 
-        # Create tree
+        # Create tree (no base_tree on first commit)
+        tree_payload: dict[str, Any] = {
+            "tree": [{"path": file_path, "mode": "100644", "type": "blob", "sha": blob_sha}],
+        }
+        if base_tree_sha:
+            tree_payload["base_tree"] = base_tree_sha
         tree_data = await _gh(
-            client,
-            "POST",
-            f"/repos/{repo}/git/trees",
-            token,
-            api_url,
-            json={
-                "base_tree": base_tree_sha,
-                "tree": [{"path": file_path, "mode": "100644", "type": "blob", "sha": blob_sha}],
-            },
+            client, "POST", f"/repos/{repo}/git/trees", token, api_url, json=tree_payload
         )
         new_tree_sha = tree_data["sha"]
 
-        # Create commit
+        # Create commit (no parents on first commit)
+        commit_payload: dict[str, Any] = {
+            "message": commit_message,
+            "tree": new_tree_sha,
+        }
+        if head_sha:
+            commit_payload["parents"] = [head_sha]
         new_commit = await _gh(
-            client,
-            "POST",
-            f"/repos/{repo}/git/commits",
-            token,
-            api_url,
-            json={
-                "message": commit_message,
-                "tree": new_tree_sha,
-                "parents": [head_sha],
-            },
+            client, "POST", f"/repos/{repo}/git/commits", token, api_url, json=commit_payload
         )
         new_commit_sha = new_commit["sha"]
 
-        # Advance ref
-        await _gh(
-            client,
-            "PATCH",
-            f"/repos/{repo}/git/refs/heads/main",
-            token,
-            api_url,
-            json={"sha": new_commit_sha},
-        )
+        # Create or advance the main ref
+        if head_sha:
+            await _gh(
+                client,
+                "PATCH",
+                f"/repos/{repo}/git/refs/heads/main",
+                token,
+                api_url,
+                json={"sha": new_commit_sha},
+            )
+        else:
+            await _gh(
+                client,
+                "POST",
+                f"/repos/{repo}/git/refs",
+                token,
+                api_url,
+                json={"ref": "refs/heads/main", "sha": new_commit_sha},
+            )
 
     log.info(
         "attestation.committed",
