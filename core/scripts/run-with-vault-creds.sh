@@ -51,7 +51,7 @@ PG_PW=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
 if [[ -n "$PG_PW" ]]; then
   PG_HOST="${OC_PG_HOST:-127.0.0.1}"
   PG_PORT="${OC_PG_PORT:-5432}"
-  PG_DBNAME="${OC_PG_DBNAME:-ashboard}"
+  PG_DBNAME="${OC_PG_DBNAME:-postgres}"
   export OC_POSTGRES_DSN="postgresql://openclaw_app:${PG_PW}@${PG_HOST}:${PG_PORT}/${PG_DBNAME}"
   PG_PW=""
   log "Fetched Postgres DSN from Vault."
