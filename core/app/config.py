@@ -54,10 +54,30 @@ class Settings(BaseSettings):
     # ── Policy ────────────────────────────────────────────────────────
     opa_url: str = Field(default="http://opa:8181")
 
-    # ── Postgres (lookup schema only; the audit projection lives here too) ──
-    # Connection string is rendered by vault-agent into a file in secrets_dir;
-    # this field is the *path* to that file, not the URL itself.
+    # ── Postgres ──────────────────────────────────────────────────────
+    # Preferred: set OC_POSTGRES_DSN directly (run-with-vault-creds.sh
+    # fetches it from Vault and exports it). Fallback: vault-agent renders
+    # the DSN to a file and core reads it at startup.
+    postgres_dsn: str = Field(default="")
     postgres_dsn_file: Path = Field(default=Path("/run/secrets/openclaw/postgres.dsn"))
+
+    # ── Audit projector ───────────────────────────────────────────────
+    enable_audit_projector: bool = Field(
+        default=True,
+        description="Run the audit-projector background task inside core.",
+    )
+    projector_poll_seconds: int = Field(
+        default=5,
+        description="Seconds between immudb scan cycles.",
+    )
+
+    @property
+    def effective_postgres_dsn(self) -> str:
+        if self.postgres_dsn:
+            return self.postgres_dsn
+        if self.postgres_dsn_file.exists():
+            return self.postgres_dsn_file.read_text().strip()
+        return ""
 
     # ── Where vault-agent renders secrets ─────────────────────────────
     secrets_dir: Path = Field(default=Path("/run/secrets/openclaw"))

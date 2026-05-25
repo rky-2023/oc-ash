@@ -358,7 +358,46 @@ docker exec oc-immudb immuadmin database use openclaw_audit
 
 ---
 
-### 2.9 Build the audit-projector service
+### 2.9 Build the audit-projector service  🟡 MVP 2026-05-24
+
+**Why:** Postgres projection for fast viewer reads (ADR-003 D5). immudb is the source of truth; this is the O(matches) query layer used by `oc audit replay` / `verify` and the viewer.
+
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `core/app/db/migrations/001_audit_projection.sql` | DDL: `audit_entries`, `audit_conversations`, `audit_policy_decisions`, `audit_checkpoint`. All idempotent. |
+| `core/app/audit/projector.py` | `AuditProjector` background task. Polls immudb every `OC_PROJECTOR_POLL_SECONDS` seconds; verifies both sigs + prev_hash; writes to Postgres atomically (entry + checkpoint in one txn). |
+| `core/app/config.py` | Added `postgres_dsn`, `enable_audit_projector`, `projector_poll_seconds`, `effective_postgres_dsn` property. |
+| `core/app/main.py` | Wired projector into lifespan; starts after appender. |
+| `core/pyproject.toml` | Added `asyncpg>=0.30`. |
+| `infra/scripts/10-apply-audit-projection-schema.sh` | One-time bootstrap: applies the migration to Postgres. |
+| `core/tests/test_projector.py` | Structural unit tests (no live DB). |
+
+**Bootstrap (run once):**
+```sh
+./infra/scripts/10-apply-audit-projection-schema.sh
+```
+Then set `OC_POSTGRES_DSN` in `run-with-vault-creds.sh` (see next step below) and restart core.
+
+**Postgres DSN in run-with-vault-creds.sh (manual for now):**
+Add after the immudb fetch:
+```bash
+PG_DSN=$(docker exec -e VAULT_TOKEN="$TOK" oc-vault \
+  vault kv get -field=url kv/openclaw/postgres/app)
+export OC_POSTGRES_DSN="$PG_DSN"
+```
+(Phase 2 task 2.5b's vault-agent sidecar will automate this.)
+
+**Integrity policy:** Bad sigs or chain breaks are projected with `sig_*_valid=false` — the projector does NOT halt. The viewer surfaces the flag; `oc audit verify` counts them.
+
+**Deferred:**
+- `oc audit replay` and `oc audit verify` are NOT yet wired to Postgres; they still scan immudb directly. Phase 2 task 2.14 adds a `--fast` flag that uses the projection.
+- Projector extraction into its own container — Phase 11 hardening.
+
+---
+
+### 2.9-original Build the audit-projector service
 
 **Why:** Postgres projection for fast viewer reads (ADR-003 D5). immudb is the source of truth; this is denormalized cache.
 

@@ -24,6 +24,7 @@ dependencies = [
     "python-ulid>=2.7",
     "hvac>=2.3",
     "click>=8.1",
+    "asyncpg>=0.30",
 ]
 
 [project.scripts]
