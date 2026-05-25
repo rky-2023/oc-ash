@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from app.audit.appender import get_appender
 from app.audit.immudb_writer import get_writer
 from app.audit.middleware import AuditMiddleware
+from app.audit.projector import get_projector
 from app.auth.router import router as auth_router
 from app.bus.nats_client import get_bus
 from app.config import settings
@@ -81,14 +82,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.writer = writer
     app.state.appender = appender
 
-    # Phase 2 follow-ups (separate PRs):
-    #   - Swap signer to Vault transit/sign/audit-service (sigs survive restart).
-    #   - Add Postgres connection for openclaw.lookup reads.
-    #   - vault-agent sidecar for live cert + secret rotation.
+    # Audit projector — reads immudb, writes to Postgres.
+    projector = get_projector()
+    pg_dsn = settings.effective_postgres_dsn
+    if settings.enable_audit_projector and pg_dsn:
+        try:
+            await projector.start(pg_dsn, poll_seconds=settings.projector_poll_seconds)
+        except Exception as e:
+            log.warning(
+                "audit_projector.start_failed",
+                err=str(e),
+                note="projection will be unavailable until projector starts",
+            )
+    else:
+        log.info(
+            "audit_projector.disabled",
+            enable=settings.enable_audit_projector,
+            has_dsn=bool(pg_dsn),
+        )
+    app.state.projector = projector
 
     yield
 
     log.info("openclaw-core shutting down")
+    await projector.stop()
     await appender.stop()
     await writer.close()
     await bus.close()
