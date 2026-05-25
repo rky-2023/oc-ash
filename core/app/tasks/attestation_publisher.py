@@ -212,10 +212,11 @@ async def commit_attestation(
     token: str,
     api_url: str,
 ) -> str:
-    """Create a commit in `repo` that adds/updates YYYY/MM/DD.json. Returns the new commit SHA.
+    """Create or update YYYY/MM/DD.json in `repo` via the Contents API.
 
-    Handles both the normal case (branch exists) and the first-commit case
-    (repo is empty — 409 on GET refs/heads/main).
+    Uses PUT /repos/{repo}/contents/{path} which works for empty repos,
+    new files, and re-publishes (idempotent within a day).
+    Returns the new commit SHA.
     """
     file_path = f"{date.year}/{date.month:02d}/{date.day:02d}.json"
     content_bytes = json.dumps(doc, sort_keys=True, indent=2).encode()
@@ -225,77 +226,43 @@ async def commit_attestation(
         f"attest({date.isoformat()}): Merkle root {short_root} ({doc['entry_count']} entries)"
     )
 
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # Try to get current HEAD. 409 = empty repo (no commits yet).
-        head_sha: str | None = None
-        base_tree_sha: str | None = None
-        try:
-            ref_data = await _gh(
-                client, "GET", f"/repos/{repo}/git/refs/heads/main", token, api_url
-            )
-            head_sha = ref_data["object"]["sha"]
-            commit_data = await _gh(
-                client, "GET", f"/repos/{repo}/git/commits/{head_sha}", token, api_url
-            )
-            base_tree_sha = commit_data["tree"]["sha"]
-        except RuntimeError as exc:
-            if "409" not in str(exc) and "404" not in str(exc):
-                raise
-            log.info("attestation.repo_empty", repo=repo, note="creating first commit")
-
-        # Create blob
-        blob_data = await _gh(
-            client,
-            "POST",
-            f"/repos/{repo}/git/blobs",
-            token,
-            api_url,
-            json={"content": content_b64, "encoding": "base64"},
+        # Check if the file already exists (needed for update — must supply its SHA).
+        existing_sha: str | None = None
+        get_resp = await client.get(
+            f"{api_url}/repos/{repo}/contents/{file_path}", headers=headers
         )
-        blob_sha = blob_data["sha"]
+        if get_resp.status_code == 200:
+            existing_sha = get_resp.json().get("sha")
+        elif get_resp.status_code not in (404, 409):
+            raise RuntimeError(
+                f"GitHub Contents GET {file_path} → {get_resp.status_code}: {get_resp.text[:200]}"
+            )
 
-        # Create tree (no base_tree on first commit)
-        tree_payload: dict[str, Any] = {
-            "tree": [{"path": file_path, "mode": "100644", "type": "blob", "sha": blob_sha}],
-        }
-        if base_tree_sha:
-            tree_payload["base_tree"] = base_tree_sha
-        tree_data = await _gh(
-            client, "POST", f"/repos/{repo}/git/trees", token, api_url, json=tree_payload
-        )
-        new_tree_sha = tree_data["sha"]
-
-        # Create commit (no parents on first commit)
-        commit_payload: dict[str, Any] = {
+        # PUT creates (no sha) or updates (with sha)
+        put_body: dict[str, Any] = {
             "message": commit_message,
-            "tree": new_tree_sha,
+            "content": content_b64,
         }
-        if head_sha:
-            commit_payload["parents"] = [head_sha]
-        new_commit = await _gh(
-            client, "POST", f"/repos/{repo}/git/commits", token, api_url, json=commit_payload
-        )
-        new_commit_sha = new_commit["sha"]
+        if existing_sha:
+            put_body["sha"] = existing_sha
 
-        # Create or advance the main ref
-        if head_sha:
-            await _gh(
-                client,
-                "PATCH",
-                f"/repos/{repo}/git/refs/heads/main",
-                token,
-                api_url,
-                json={"sha": new_commit_sha},
+        put_resp = await client.put(
+            f"{api_url}/repos/{repo}/contents/{file_path}",
+            headers=headers,
+            json=put_body,
+        )
+        if put_resp.status_code not in (200, 201):
+            raise RuntimeError(
+                f"GitHub Contents PUT {file_path} → {put_resp.status_code}: {put_resp.text[:300]}"
             )
-        else:
-            await _gh(
-                client,
-                "POST",
-                f"/repos/{repo}/git/refs",
-                token,
-                api_url,
-                json={"ref": "refs/heads/main", "sha": new_commit_sha},
-            )
+        new_commit_sha = put_resp.json()["commit"]["sha"]
 
     log.info(
         "attestation.committed",
