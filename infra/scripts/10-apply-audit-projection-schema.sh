@@ -34,8 +34,17 @@ fi
 
 psql_super() {
   case "$PG_MODE" in
-    docker) docker exec -i "$PG_CONTAINER" psql -U postgres ;;
-    system) sudo -u postgres psql ;;
+    docker) docker exec -i "$PG_CONTAINER" psql -U postgres -d postgres ;;
+    # Peer auth: run as the current user (must be a Postgres superuser).
+    # On this host rky-server has superuser via pg_hba peer auth.
+    # If that fails, falls back to sudo -u postgres.
+    system)
+      if psql -U "$(whoami)" -d postgres -c "" > /dev/null 2>&1; then
+        psql -U "$(whoami)" -d postgres
+      else
+        sudo -u postgres psql -d postgres
+      fi
+      ;;
     *) die "Unknown PG_MODE: $PG_MODE" ;;
   esac
 }
@@ -43,11 +52,8 @@ psql_super() {
 log "Detected PG_MODE=$PG_MODE${PG_CONTAINER:+, container=$PG_CONTAINER}"
 log "Applying audit projection migration..."
 
-psql_super <<SQL
-\c openclaw
-\i /dev/stdin
-SQL
-# Pass migration via stdin so the container doesn't need a mounted file
+# openclaw is a schema inside the postgres database, not a separate DB.
+# Pass the migration via stdin; all DDL is schema-qualified (openclaw.*).
 psql_super < "$MIGRATION" \
   | grep -vE '^(CREATE|INSERT|ALTER|GRANT|DO|SET|COMMENT)$' || true
 
