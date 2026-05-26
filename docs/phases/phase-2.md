@@ -392,7 +392,7 @@ export OC_POSTGRES_DSN="$PG_DSN"
 **Integrity policy:** Bad sigs or chain breaks are projected with `sig_*_valid=false` — the projector does NOT halt. The viewer surfaces the flag; `oc audit verify` counts them.
 
 **Deferred:**
-- `oc audit replay` and `oc audit verify` are NOT yet wired to Postgres; they still scan immudb directly. Phase 2 task 2.14 adds a `--fast` flag that uses the projection.
+- ✅ `oc audit replay --fast` and `oc audit verify --fast` use the Postgres projection index (O(day) not O(all)); implemented in `core/app/cli/audit_cmds.py`.
 - Projector extraction into its own container — Phase 11 hardening.
 
 ---
@@ -456,7 +456,7 @@ pnpm dev       # http://localhost:3000
 **Deferred:**
 - mTLS gate (Phase 11 hardening — the tailnet already provides network-level isolation).
 - "Reveal" button on encrypted blobs — needs Phase 1 task 1.9 YubiKey enrollment first.
-- `oc audit replay` / `oc audit verify` `--fast` flag wired to Postgres (task 2.14).
+- ✅ `oc audit replay --fast` / `oc audit verify --fast` wired to Postgres projection.
 
 ---
 

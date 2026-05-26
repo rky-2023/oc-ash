@@ -7,6 +7,7 @@ import datetime as dt
 import sys
 from typing import Any
 
+import asyncpg
 import click
 
 from app.audit.envelope import AuditEnvelope
@@ -95,9 +96,17 @@ async def _run_tail(subject: str, json_out: bool) -> None:
 @click.option(
     "--json", "json_out", is_flag=True, help="Output JSON envelopes instead of the ladder diagram."
 )
-def replay(conv_id: str, json_out: bool) -> None:
+@click.option(
+    "--fast",
+    is_flag=True,
+    help="Use Postgres projection index instead of full immudb scan (requires OC_POSTGRES_DSN).",
+)
+def replay(conv_id: str, json_out: bool, fast: bool) -> None:
     """Reconstruct one A2A conversation from immudb by conv_id."""
-    envs = asyncio.run(_collect_by_conv_id(conv_id))
+    if fast:
+        envs = asyncio.run(_collect_by_conv_id_fast(conv_id))
+    else:
+        envs = asyncio.run(_collect_by_conv_id(conv_id))
     if json_out:
         for env in envs:
             echo_envelope_json(env)
@@ -127,6 +136,37 @@ async def _collect_by_conv_id(conv_id: str) -> list[AuditEnvelope]:
     return envs
 
 
+async def _collect_by_conv_id_fast(conv_id: str) -> list[AuditEnvelope]:
+    """Query Postgres projection for envelopes by conv_id — O(matches) via index."""
+    from app.config import settings
+
+    dsn = settings.effective_postgres_dsn
+    if not dsn:
+        click.echo("[oc] OC_POSTGRES_DSN not set — cannot use --fast path", err=True)
+        sys.exit(2)
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, command_timeout=30)
+    try:
+        rows = await pool.fetch(
+            "SELECT raw_envelope FROM openclaw.audit_entries"
+            " WHERE conv_id = $1 ORDER BY ulid ASC",
+            conv_id,
+        )
+    finally:
+        await pool.close()
+
+    envs: list[AuditEnvelope] = []
+    for row in rows:
+        raw = row["raw_envelope"]
+        try:
+            env = AuditEnvelope.model_validate(raw) if isinstance(raw, dict) \
+                else AuditEnvelope.model_validate_json(raw)
+        except Exception:
+            continue
+        envs.append(env)
+    return envs
+
+
 # ─────────────────────────────────────────────────────────────────────
 # verify [--date YYYY-MM-DD]
 # ─────────────────────────────────────────────────────────────────────
@@ -139,7 +179,12 @@ async def _collect_by_conv_id(conv_id: str) -> list[AuditEnvelope]:
     default=None,
     help="ISO date (YYYY-MM-DD) to verify. Default: today UTC.",
 )
-def verify(date_str: str | None) -> None:
+@click.option(
+    "--fast",
+    is_flag=True,
+    help="Use pre-computed sig/chain results from Postgres projection (requires OC_POSTGRES_DSN).",
+)
+def verify(date_str: str | None, fast: bool) -> None:
     """Verify signatures + prev_hash chain over stored envelopes."""
     if date_str is None:
         target = dt.date.today()
@@ -150,7 +195,10 @@ def verify(date_str: str | None) -> None:
             click.echo(f"Invalid date: {date_str!r} (expected YYYY-MM-DD)", err=True)
             sys.exit(2)
 
-    asyncio.run(_run_verify(target))
+    if fast:
+        asyncio.run(_run_verify_fast(target))
+    else:
+        asyncio.run(_run_verify(target))
 
 
 async def _run_verify(target: dt.date) -> None:
@@ -193,6 +241,59 @@ async def _run_verify(target: dt.date) -> None:
     finally:
         await writer.close()
 
+    _print_verify_summary(target, total, ok_service, ok_appender, chain_ok,
+                          bad_service, bad_appender, chain_breaks)
+
+
+async def _run_verify_fast(target: dt.date) -> None:
+    """Read pre-computed sig/chain validity from Postgres projection — O(day) not O(all)."""
+    from app.config import settings
+
+    dsn = settings.effective_postgres_dsn
+    if not dsn:
+        click.echo("[oc] OC_POSTGRES_DSN not set — cannot use --fast path", err=True)
+        sys.exit(2)
+
+    start = dt.datetime(target.year, target.month, target.day, tzinfo=dt.timezone.utc)
+    end = start + dt.timedelta(days=1)
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, command_timeout=30)
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ulid, sig_service_valid, sig_appender_valid, chain_valid
+            FROM openclaw.audit_entries
+            WHERE ts >= $1 AND ts < $2
+            ORDER BY ulid ASC
+            """,
+            start,
+            end,
+        )
+    finally:
+        await pool.close()
+
+    total = len(rows)
+    ok_service = sum(1 for r in rows if r["sig_service_valid"])
+    ok_appender = sum(1 for r in rows if r["sig_appender_valid"])
+    chain_ok = sum(1 for r in rows if r["chain_valid"])
+    bad_service = [r["ulid"] for r in rows if not r["sig_service_valid"]]
+    bad_appender = [r["ulid"] for r in rows if not r["sig_appender_valid"]]
+    chain_breaks = [r["ulid"] for r in rows if not r["chain_valid"]]
+
+    _print_verify_summary(target, total, ok_service, ok_appender, chain_ok,
+                          bad_service, bad_appender, chain_breaks)
+
+
+def _print_verify_summary(
+    target: dt.date,
+    total: int,
+    ok_service: int,
+    ok_appender: int,
+    chain_ok: int,
+    bad_service: list[str],
+    bad_appender: list[str],
+    chain_breaks: list[str],
+) -> None:
     click.echo(f"Date: {target.isoformat()}")
     click.echo(f"Entries: {total}")
     click.echo(f"Signatures: service {ok_service}/{total}, appender {ok_appender}/{total}")
