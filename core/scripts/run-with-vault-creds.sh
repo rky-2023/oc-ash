@@ -79,6 +79,7 @@ fi
 # ── Export env + launch ─────────────────────────────────────────────
 export OC_WEBAUTHN_RP_ID="$HOSTNAME"
 export OC_WEBAUTHN_EXPECTED_ORIGINS_CSV="https://$HOSTNAME:8000"
+export OC_NATS_URL="${OC_NATS_URL:-nats://127.0.0.1:4222}"
 export OC_IMMUDB_HOST="${OC_IMMUDB_HOST:-127.0.0.1}"
 export OC_IMMUDB_PORT="${OC_IMMUDB_PORT:-3322}"
 export OC_IMMUDB_USER="appender"

@@ -188,7 +188,7 @@ fi
 # ── T8–T13  Blocked on task 2.14 (FastAPI audit middleware) ──────────
 hdr "T8–T13: Full pipeline tests (blocked on task 2.14 — FastAPI middleware)"
 
-skip "T8:  HTTP request → audit entry in immudb within 500 ms (needs middleware)"
+skip "T8:  HTTP request to /api/audit/entries → 2 envelopes in immudb within 500 ms (needs running core + creds)"
 skip "T9:  audit-appender kill + restart — no duplicates, no gaps (needs live entries)"
 skip "T10: oc audit projection rebuild — row count matches immudb (needs projector rebuild cmd)"
 skip "T11: tamper audit_entries → oc audit verify detects mismatch (needs entries)"
