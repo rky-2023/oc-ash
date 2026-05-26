@@ -599,7 +599,7 @@ pip install -e .                          # picks up the new oc entrypoint
 
 ---
 
-### 2.15 Smoke test the whole spine + document
+### 2.15 Smoke test the whole spine + document  ✅ 2026-05-26
 
 **Why:** Exit criteria validation.
 
