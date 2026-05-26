@@ -23,9 +23,9 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GREEN='\033[1;32m'; YELLOW='\033[1;33m'; RED='\033[1;31m'
 CYAN='\033[1;36m'; RESET='\033[0m'
 
-pass()  { echo -e "${GREEN}  PASS${RESET}  $*"; ((PASSED++)); }
-fail()  { echo -e "${RED}  FAIL${RESET}  $*"; ((FAILED++)); }
-skip()  { echo -e "${YELLOW}  SKIP${RESET}  $*"; ((SKIPPED++)); }
+pass()  { echo -e "${GREEN}  PASS${RESET}  $*"; PASSED=$((PASSED+1)); }
+fail()  { echo -e "${RED}  FAIL${RESET}  $*"; FAILED=$((FAILED+1)); }
+skip()  { echo -e "${YELLOW}  SKIP${RESET}  $*"; SKIPPED=$((SKIPPED+1)); }
 hdr()   { echo -e "\n${CYAN}── $* ──${RESET}"; }
 
 PASSED=0; FAILED=0; SKIPPED=0
@@ -77,10 +77,10 @@ fi
 
 if psql -U "$(whoami)" -d postgres -c \
   "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='openclaw'" \
-  -q --tuples-only 2>/dev/null | grep -qE "^[0-9]+"; then
+  -q --tuples-only 2>/dev/null | grep -qE "[0-9]+"; then
   tbl_count=$(psql -U "$(whoami)" -d postgres -c \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='openclaw'" \
-    -q --tuples-only 2>/dev/null | tr -d ' ')
+    -q --tuples-only 2>/dev/null | tr -d ' \n')
   if [[ "$tbl_count" -ge 5 ]]; then
     pass "openclaw schema has $tbl_count tables (audit projection present)"
   else
