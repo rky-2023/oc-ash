@@ -72,16 +72,34 @@ class PolicyDecision(BaseModel):
     decision: str = Field(description='"allow" | "deny" | "n/a"')
     rule: str | None = None
     input_hash: str | None = None
+    # sha256 of the redaction.rego that made the redaction decision, so we
+    # can prove which policy version produced this envelope (ADR-003 D6).
+    redaction_version: str | None = None
 
 
 class EncryptedBlob(BaseModel):
-    """A field that was kept but encrypted under a Vault transit key (ADR-003 D6)."""
+    """A field that was kept but encrypted under a Vault transit key (ADR-003 D6).
+
+    Envelope encryption: the field value is sealed with a per-message AES-256-GCM
+    data-encryption key (DEK); that DEK is itself wrapped by the Vault transit key
+    named in `key_id`. Reveal = unwrap the DEK via Vault (YubiKey-gated, ADR-002 D5)
+    then AES-GCM-decrypt `ciphertext` with `nonce`.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     field: str
-    key_id: str
-    ciphertext: str  # base64
+    key_id: str  # Vault transit key that wrapped the DEK, e.g. "audit-pii-v3"
+    ciphertext: str  # base64(AES-256-GCM ciphertext + tag)
+    wrapped_dek: str  # Vault-wrapped DEK, "vault:v1:<base64>"
+    nonce: str  # base64(96-bit GCM nonce)
+
+
+# Fields the audit-appender assigns or mutates AFTER the originating service
+# has signed (chain position + redaction outputs). sig_service is computed
+# with these excluded; sig_appender and the chain hash cover them. See
+# to_canonical_bytes() and ADR-003 D3/D6.
+_APPENDER_OWNED_FIELDS = {"prev_hash", "redacted_payload", "encrypted_blobs", "policy"}
 
 
 class AuditEnvelope(BaseModel):
@@ -159,22 +177,27 @@ class AuditEnvelope(BaseModel):
             prev_hash=prev_hash,
         )
 
-    def to_canonical_bytes(self, exclude_prev_hash: bool = False) -> bytes:
+    def to_canonical_bytes(self, slot: str | None = None) -> bytes:
         """JSON-serialize this envelope MINUS its signature fields, in a
         deterministic byte-for-byte form. This is what signatures cover.
 
         Used by signer.sign_envelope() (input to HMAC/sign) and by
         verifier (recompute and compare).
 
-        `exclude_prev_hash=True` additionally drops `prev_hash`: the
-        originating service signs BEFORE the appender assigns the chain
-        position, so sig_service must not cover prev_hash (otherwise the
-        appender's later mutation invalidates it). The appender signature
-        and the chain hash DO cover prev_hash (default False).
+        `slot="service"` additionally drops the fields the appender
+        assigns or mutates AFTER the originating service signs: the chain
+        position (`prev_hash`) and the redaction outputs (`redacted_payload`,
+        `encrypted_blobs`, `policy`). The service signs pre-chain,
+        pre-redaction (ADR-003 D3/D6), so sig_service must not cover them —
+        otherwise the appender's later mutation invalidates it.
+
+        `slot="appender"` / `slot=None` covers the full final form (only the
+        two signature fields are excluded). The chain hash (`canonical_sha256`)
+        uses this full basis, so the prev_hash chain anchors the redacted entry.
         """
         excluded = {"sig_service", "sig_appender"}
-        if exclude_prev_hash:
-            excluded = excluded | {"prev_hash"}
+        if slot == "service":
+            excluded = excluded | _APPENDER_OWNED_FIELDS
         d = self.model_dump(mode="json", exclude=excluded)
         # canonical: sorted keys, compact separators, ms precision in `ts`
         return json.dumps(d, sort_keys=True, separators=(",", ":")).encode("utf-8")

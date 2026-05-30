@@ -130,8 +130,9 @@ async def sign_envelope(env: AuditEnvelope, slot: str = "service") -> AuditEnvel
     # _slot_key, so without this it would silently sign a bogus slot).
     if slot not in ("service", "appender"):
         raise ValueError(f"Unknown signature slot: {slot!r}")
-    # The service signs before prev_hash exists; the appender signs after.
-    payload = env.to_canonical_bytes(exclude_prev_hash=(slot == "service"))
+    # The service signs before the appender assigns prev_hash + redaction
+    # outputs; sig_service covers the slot-specific (reduced) basis.
+    payload = env.to_canonical_bytes(slot=slot)
     client = _get_vault_client()
 
     if client is not None:
@@ -168,7 +169,7 @@ async def verify_envelope(env: AuditEnvelope, slot: str = "service") -> bool:
     if not raw:
         return False
 
-    payload = env.to_canonical_bytes(exclude_prev_hash=(slot == "service"))
+    payload = env.to_canonical_bytes(slot=slot)
 
     if raw.startswith("ed25519-transit:"):
         vault_sig = raw[len("ed25519-transit:"):]

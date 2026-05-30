@@ -264,6 +264,16 @@ The vault-agent sidecar (task 2.5b) runs core back inside the compose network wh
 
 ---
 
+## 18. Appender-side redaction widened the sig_service canonical basis
+
+**Symptom:** after task 2.7 shipped, the ~22 pre-2.7 test entries in immudb read `sig_service_valid=false` in the projection, even though they verified fine before.
+
+**Cause (by design, not a regression):** ADR-003 D6 redaction runs in the *appender* — it rewrites `redacted_payload`, fills `encrypted_blobs`, and stamps `policy.redaction_version` *after* the originating service has already signed. So `sig_service` must NOT cover those fields (same reasoning as the earlier `prev_hash` exclusion, §15). `envelope.to_canonical_bytes(slot="service")` now excludes `{prev_hash, redacted_payload, encrypted_blobs, policy}`; the appender signature + chain hash cover the full final form. Entries signed under the *old* (narrower) service basis no longer re-verify under the new one.
+
+**Fix / expectation:** this is a one-time ledger-format change. Pre-2.7 entries are immutable test traffic — the projector flags them and that's correct. All entries written from 2.7 onward verify on both slots. Don't "fix" the old entries (you can't — WORM); just re-verify with fresh traffic. The slot→excluded-fields mapping lives in `_APPENDER_OWNED_FIELDS` in `core/app/audit/envelope.py`.
+
+---
+
 ## Meta: how to add to this list
 
 Anytime you hit something non-obvious during ops:

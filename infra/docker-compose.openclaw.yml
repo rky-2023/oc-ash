@@ -189,6 +189,10 @@ services:
     restart: unless-stopped
     networks:
       - oc-internal
+    # Loopback-published for the host-MVP core path (mirrors immudb/NATS);
+    # the containerised core reaches OPA via the oc-internal `opa` hostname.
+    ports:
+      - "127.0.0.1:8181:8181"
     volumes:
       - ../policy:/policy:ro
     command: ["run", "--server", "--addr=0.0.0.0:8181", "/policy"]

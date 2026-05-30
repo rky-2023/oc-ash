@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     # ── Policy ────────────────────────────────────────────────────────
     opa_url: str = Field(default="http://opa:8181")
 
+    # ── Audit redaction (ADR-003 D6, task 2.7) ───────────────────────
+    # Redaction runs in the appender before the WORM write. Disable in unit
+    # tests that don't have a live OPA/Vault (the version is still pinned).
+    redaction_enabled: bool = Field(default=True)
+    # Vault transit key that wraps per-message PII data keys (created by
+    # 04-vault-bootstrap.sh as `audit-pii-v3`, aes256-gcm96).
+    vault_transit_key_pii: str = Field(default="audit-pii-v3")
+    # Path to redaction.rego, hashed into each envelope's redaction_version.
+    # Container default is the compose mount; the host MVP path overrides via
+    # OC_REDACTION_POLICY_PATH in run-with-vault-creds.sh.
+    redaction_policy_path: Path = Field(default=Path("/policy/redaction.rego"))
+
     # ── Postgres ──────────────────────────────────────────────────────
     # Preferred: set OC_POSTGRES_DSN directly (run-with-vault-creds.sh
     # fetches it from Vault and exports it). Fallback: vault-agent renders
