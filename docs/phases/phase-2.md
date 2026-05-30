@@ -584,18 +584,26 @@ pip install -e .                          # picks up the new oc entrypoint
 
 ---
 
-### 2.14 Wire up the audit appender into `core` itself  ✅ verified 2026-05-30
+### 2.14 Wire up the audit appender into `core` itself  ✅ verified end-to-end 2026-05-30
 
 **Why:** Up to here, the appender consumes from NATS. We also want core's *own* request/response cycle to publish to NATS so it gets audited.
 
-**Steps:**
-- Add FastAPI middleware in `core/app/main.py` that:
-  - Before each request: assigns a request-scoped ULID, captures method/path/headers (after redaction filter on Authorization, etc.).
-  - After each response: publishes one `oc.event.core.request` and one `oc.event.core.response` to NATS, paired by ULID.
-  - Failure to publish is non-blocking on the request itself (NATS is up or paranoid mode applies); the request completes regardless.
-- The middleware lives in `core/app/audit/middleware.py` and is the same module that downstream MCP proxies (Phase 4) and ingesters (Phase 3) will reuse.
+**Implementation notes:**
 
-**Verify:** Hit `/health` 10 times; see 20 entries in immudb within 1 s; the viewer's `/` page shows them.
+- `core/app/audit/middleware.py` — `AuditMiddleware(BaseHTTPMiddleware)` emits two envelopes per request: `action=request` before the handler and `action=response` after. Both share a `conv_id`. Subject pattern: `oc.event.core.request.<method>` / `oc.event.core.response.<method>`.
+- `core/app/main.py` — `app.add_middleware(AuditMiddleware)` wired; NATS bus + immudb writer + appender all started in `lifespan`.
+- Skip list: `/health`, `/static`, `/favicon.ico` — health pings are operational noise, not auditable events.
+- `run-with-vault-creds.sh` exports `OC_NATS_URL=nats://127.0.0.1:4222` so the host process finds the NATS container (default `nats://nats:4222` is a Docker-internal hostname).
+
+**Verify (run via `run-with-vault-creds.sh`):**
+```bash
+# From another terminal, hit a non-skip endpoint 5 times:
+for i in $(seq 5); do curl -sk https://<tailnet-host>:8000/api/audit/entries > /dev/null; done
+
+# Then check immudb entry count climbed by ~10:
+oc audit verify --fast --date $(date -u +%Y-%m-%d)
+```
+`/health` is intentionally excluded from the audit (skip list); use `/api/audit/entries` or any auth endpoint to generate traffic.
 
 **Executed 2026-05-30 — full pipeline proven end-to-end:**
 
