@@ -190,6 +190,15 @@ immu_db_list() { docker exec oc-immudb immuadmin database list 2>/dev/null || tr
 immu_db_create() { docker exec oc-immudb immuadmin database create "$1" >/dev/null; }
 immu_user_list() { docker exec oc-immudb immuadmin user list 2>/dev/null || true; }
 
+# `immuadmin user create <user> <perm> <db>` creates the user but does NOT
+# reliably persist the per-database permission grant in immudb 1.9.x — the
+# user ends up able to log in yet gets PERMISSION_DENIED on useDatabase().
+# Grant it explicitly (idempotent: re-granting the same perm is a no-op).
+immu_grant() {
+  local user="$1" perm="$2" db="$3"
+  docker exec oc-immudb immuadmin user permission grant "$user" "$perm" "$db" >/dev/null
+}
+
 # ── Login as admin ──────────────────────────────────────────────────
 log "Logging in as admin (forced password change handled inline if first run)"
 if [[ "$FIRST_RUN" == "true" ]]; then
@@ -236,6 +245,10 @@ ensure_user() {
     log "  creating user '$user' with $perm on openclaw_audit"
     immu_create_user "$user" "$perm" "$pw" openclaw_audit || die "Could not create user '$user'"
   fi
+  # Explicit grant — create alone does not persist the per-db permission.
+  immu_grant "$user" "$perm" openclaw_audit \
+    || die "Could not grant $perm on openclaw_audit to '$user'"
+  log "  ✓ $perm permission granted to '$user' on openclaw_audit"
 }
 
 ensure_user appender  readwrite "$APPENDER_PW"

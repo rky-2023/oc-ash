@@ -91,7 +91,12 @@ def _get_vault_client() -> "_hvac_t.Client | None":
     if not settings.vault_signing_enabled or not settings.vault_token:
         return None
     import hvac
-    _vault_client = hvac.Client(url=settings.vault_addr, token=settings.vault_token)
+    # verify: a CA bundle path takes precedence; otherwise the bool toggle.
+    # (hvac forwards this straight to requests' `verify`.)
+    verify: bool | str = settings.vault_cacert or settings.vault_verify
+    _vault_client = hvac.Client(
+        url=settings.vault_addr, token=settings.vault_token, verify=verify
+    )
     return _vault_client
 
 
@@ -120,7 +125,13 @@ async def sign_envelope(env: AuditEnvelope, slot: str = "service") -> AuditEnvel
     returns it. An empty string is written if Vault signing fails so
     the envelope is still emitted (with a flagged integrity state).
     """
-    payload = env.to_canonical_bytes()
+    # Validate the slot up front so an unknown slot fails loudly on BOTH
+    # the Vault and HMAC-fallback paths (the HMAC path never reaches
+    # _slot_key, so without this it would silently sign a bogus slot).
+    if slot not in ("service", "appender"):
+        raise ValueError(f"Unknown signature slot: {slot!r}")
+    # The service signs before prev_hash exists; the appender signs after.
+    payload = env.to_canonical_bytes(exclude_prev_hash=(slot == "service"))
     client = _get_vault_client()
 
     if client is not None:
@@ -157,7 +168,7 @@ async def verify_envelope(env: AuditEnvelope, slot: str = "service") -> bool:
     if not raw:
         return False
 
-    payload = env.to_canonical_bytes()
+    payload = env.to_canonical_bytes(exclude_prev_hash=(slot == "service"))
 
     if raw.startswith("ed25519-transit:"):
         vault_sig = raw[len("ed25519-transit:"):]

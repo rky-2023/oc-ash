@@ -27,6 +27,33 @@ bash core/scripts/run-with-vault-creds.sh   # for the FastAPI core process
 
 The scripts prompt for the Role ID + Secret ID from your password manager and mint a 15-minute token. The root token was destroyed at bootstrap; AppRole is the only admin path.
 
+### Skip re-entering the AppRole creds (GPG-encrypted file)
+
+Re-typing the Role ID + Secret ID on every launch is tedious. `run-with-vault-creds.sh` will load them from a **GPG-symmetric-encrypted** file if one exists, prompting only for the GPG passphrase (which gpg-agent then caches for ~10 min):
+
+```bash
+# One-time: write the encrypted creds file (AES-256, passphrase-protected).
+mkdir -p "$HOME/.config/openclaw"
+gpg --symmetric --cipher-algo AES256 \
+    -o "$HOME/.config/openclaw/admin.env.gpg" <<'EOF'
+ROLE_ID=<role-id>
+SECRET_ID=<secret-id>
+EOF
+chmod 600 "$HOME/.config/openclaw/admin.env.gpg"
+```
+
+After that, `run-with-vault-creds.sh` decrypts it automatically. Override the path with `OC_ADMIN_ENV_GPG=…`. If the file is absent the script falls back to interactive prompts.
+
+**Why not a plaintext `.env`?** The Secret ID is a long-lived bearer credential for the `openclaw-admin` AppRole. A plaintext file (or pasting it into a chat/agent session) means anyone with read access — or any tool that ingests your files — holds admin. GPG-symmetric keeps it encrypted at rest; the passphrase lives only in your head + gpg-agent's short-lived cache. The decrypt path is also explicitly **denied** to Claude in `.claude/settings.local.json`.
+
+> **TTY gotcha:** gpg needs a terminal for the passphrase prompt. If you see `Inappropriate ioctl for device`, export `GPG_TTY=$(tty)` first (the script does this for you, but it matters for manual `gpg -d`).
+
+### Signing stopped after ~15 minutes? The token expired.
+
+If audited requests stop appearing in Postgres after core has been up a while — and the logs show `vault.transit.sign_failed: permission denied / invalid token` — the 15-minute AppRole token has expired. The appender discards envelopes with empty signatures, silently, with no crash.
+
+**Fix:** restart core via `run-with-vault-creds.sh` to mint a fresh token. A uvicorn `--reload` does **not** refresh it (it reloads code, not the launcher's exported token). The permanent fix is the vault-agent sidecar (task 2.5b), which auto-renews. See `docs/BOOTSTRAP_LESSONS.md § 17`.
+
 ---
 
 ## Postgres projection

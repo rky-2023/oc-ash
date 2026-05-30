@@ -115,29 +115,24 @@ class AuditProjector:
             "SELECT last_ulid FROM openclaw.audit_checkpoint WHERE id = 1"
         )
 
-        # 2. Scan immudb for entries newer than the checkpoint
+        # 2. Scan immudb and keep entries strictly after the checkpoint.
+        # immudb-py 1.5.0: scan(key, prefix, desc, limit) -> Dict[bytes, bytes].
+        # We scan from the start (key=b"") and filter by ULID in Python rather
+        # than rely on seekKey inclusive/exclusive semantics (which silently
+        # stalled the incremental cursor). ULIDs sort lexicographically, so a
+        # bytes `>` comparison gives correct "newer than checkpoint" ordering.
+        # limit=1000 is immudb's per-scan cap; pagination is future work once
+        # a single cycle can exceed it (ADR-003 projection-rebuild path).
         def _scan() -> list[tuple[bytes, bytes]]:
-            pairs: list[tuple[bytes, bytes]] = []
-            seek = (checkpoint or "").encode("ascii") if checkpoint else b""
-            try:
-                entries = writer._client.scan(seek, 0, 200, False)
-            except TypeError:
-                try:
-                    entries = writer._client.scan(seek, b"", 200, False)
-                except Exception:
-                    entries = []
-            for e in entries or []:
-                k = getattr(e, "key", None)
-                v = getattr(e, "value", None)
-                if k is not None and v is not None:
-                    pairs.append((k, v))
-            return pairs
+            result = writer._client.scan(b"", b"", False, 1000)
+            return list((result or {}).items())
 
         raw_pairs = await asyncio.to_thread(_scan)
 
-        # Skip the checkpoint entry itself (scan is inclusive on seekKey)
-        if checkpoint and raw_pairs and raw_pairs[0][0] == checkpoint.encode("ascii"):
-            raw_pairs = raw_pairs[1:]
+        if checkpoint:
+            cp = checkpoint.encode("ascii")
+            raw_pairs = [(k, v) for (k, v) in raw_pairs if k > cp]
+        raw_pairs.sort(key=lambda kv: kv[0])  # ensure ascending ULID order
 
         if not raw_pairs:
             return 0

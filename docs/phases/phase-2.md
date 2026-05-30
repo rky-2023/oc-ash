@@ -584,7 +584,7 @@ pip install -e .                          # picks up the new oc entrypoint
 
 ---
 
-### 2.14 Wire up the audit appender into `core` itself
+### 2.14 Wire up the audit appender into `core` itself  ✅ verified 2026-05-30
 
 **Why:** Up to here, the appender consumes from NATS. We also want core's *own* request/response cycle to publish to NATS so it gets audited.
 
@@ -596,6 +596,27 @@ pip install -e .                          # picks up the new oc entrypoint
 - The middleware lives in `core/app/audit/middleware.py` and is the same module that downstream MCP proxies (Phase 4) and ingesters (Phase 3) will reuse.
 
 **Verify:** Hit `/health` 10 times; see 20 entries in immudb within 1 s; the viewer's `/` page shows them.
+
+**Executed 2026-05-30 — full pipeline proven end-to-end:**
+
+The chain `HTTP request → AuditMiddleware → sign (Vault transit Ed25519) → NATS JetStream OC_EVENT → audit-appender → immudb (WORM) → audit-projector → Postgres openclaw.audit_entries` works with cryptographic integrity verified on every dimension. Final verification of a fresh batch:
+```
+NEW:   total=12  svc_ok=12  app_ok=12  chain_ok=12
+GRAND: entries=22  conversations=11   (checkpoint advanced)
+```
+(The first 10 entries carry `svc_ok=1` — they were signed before the `sig_service`/`prev_hash` fix below and are immutable in the WORM ledger; they were test traffic only.)
+
+**Non-trivial fixes shipped to get here** (all documented in `docs/BOOTSTRAP_LESSONS.md §§ 11–17`):
+- **immudb login DB** — immudb-py `login()` defaults to `defaultdb`; non-admin users are denied there. Pass `database=` to `login()` (`core/app/audit/immudb_writer.py`). [§11]
+- **immudb grant persistence** — `user create <perm> <db>` doesn't persist the grant; added an explicit `immuadmin user permission grant` step to `infra/scripts/07-immudb-bootstrap.sh`. [§12]
+- **Host-MVP loopback URLs** — published immudb/NATS to `127.0.0.1` in `infra/docker-compose.openclaw.yml`; `run-with-vault-creds.sh` exports `OC_NATS_URL`/`OC_VAULT_ADDR` loopback overrides. [§13]
+- **Vault TLS verify** — added `OC_VAULT_CACERT`/`OC_VAULT_VERIFY` to `core/app/config.py`; signer passes `verify` to hvac. [§14]
+- **`sig_service` vs `prev_hash`** — service signs before the appender assigns `prev_hash`; `to_canonical_bytes(exclude_prev_hash=…)` keeps the service signature valid through the appender's mutation. [§15]
+- **ulid API** — `python-ulid` is `ulid.ULID.from_datetime()`, not `ulid.new()`. [§16]
+- **projector scan** — corrected immudb-py `scan(key, prefix, desc, limit)` arg order + dict result handling; filter `ulid > checkpoint` in Python. (`core/app/audit/projector.py`)
+- **Operator convenience** — GPG-encrypted AppRole creds file so the operator stops re-entering Role/Secret ID; see `docs/RUNBOOK.md § Vault`.
+
+**Operational caveat:** the AppRole token's 15-min TTL means signing silently stops after expiry until core is restarted. The vault-agent sidecar (task 2.5b) is the permanent fix. [BOOTSTRAP_LESSONS §17]
 
 ---
 
@@ -684,3 +705,4 @@ To avoid scope creep, Phase 2 stops short of:
   - 08: switched from `docker exec oc-nats nats stream add` (no CLI in server image) to `docker run --rm --network=oc-internal natsio/nats-box nats stream add`.
   - New helper `upload-immudb-creds-to-vault.sh` for when 07 runs without Vault wiring (e.g., from a Bash tool with no AppRole creds).
   - 8 small fix commits in the PR document each gotcha for future bootstraps.
+- **2026-05-30 (v1.5)** — Task 2.14 verified end-to-end (`svc_ok=12 app_ok=12 chain_ok=12`). 8 code/infra fixes shipped (immudb login DB, grant persistence, host-MVP loopback URLs, Vault TLS verify, `sig_service`/`prev_hash` canonical split, ulid API, projector scan signature, GPG creds file) — all captured in `docs/BOOTSTRAP_LESSONS.md §§ 11–17` and `docs/RUNBOOK.md`. Stale async signer/envelope unit tests fixed; suite green (47 passed).

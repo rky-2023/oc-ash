@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # Vault-agent sidecar (task 1.12) will replace this with a
     # short-lived file-rendered token in production.
     vault_token: str = Field(default="")
+    # TLS verification for the Vault client. In the containerised path
+    # core reaches Vault over the plain-HTTP internal listener; on the
+    # host MVP path it must use the TLS listener on 127.0.0.1, whose cert
+    # is signed by the internal CA. Set OC_VAULT_CACERT to that CA bundle
+    # to verify properly, or OC_VAULT_VERIFY=false to skip verification
+    # for the loopback connection (acceptable: same-host, no MITM surface).
+    vault_cacert: str = Field(default="")
+    vault_verify: bool = Field(default=True)
 
     # ── Vault transit signing (ADR-002 D12) ───────────────────────────
     vault_transit_key_service: str = Field(default="audit-service")
