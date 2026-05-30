@@ -63,9 +63,14 @@ class ImmudbWriter:
         log.info("immudb.connect.begin", host=host, port=port, user=user, db=db)
 
         def _do_connect() -> Any:
+            # immudb-py's login() defaults to database=b"defaultdb". The
+            # appender/projector users are granted permission ONLY on the
+            # audit DB, so logging into defaultdb raises PERMISSION_DENIED.
+            # Log straight into the target database instead.
+            db_bytes = db.encode() if isinstance(db, str) else db
             c = ImmudbClient(f"{host}:{port}")
-            c.login(user, password)
-            c.useDatabase(db)
+            c.login(user, password, database=db_bytes)
+            c.useDatabase(db_bytes)
             return c
 
         self._client = await asyncio.to_thread(_do_connect)

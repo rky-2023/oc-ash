@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from app.audit.envelope import (
@@ -30,7 +31,7 @@ def _make_env() -> AuditEnvelope:
 
 def test_envelope_round_trip_via_to_wire_bytes() -> None:
     env = _make_env()
-    sign_envelope(env, slot="service")
+    asyncio.run(sign_envelope(env, slot="service"))
     wire = env.to_wire_bytes()
     parsed = AuditEnvelope.model_validate(json.loads(wire.decode()))
     assert parsed.ulid == env.ulid
@@ -41,29 +42,29 @@ def test_envelope_round_trip_via_to_wire_bytes() -> None:
 def test_canonical_bytes_excludes_signatures() -> None:
     env = _make_env()
     canon_before = env.to_canonical_bytes()
-    sign_envelope(env, slot="service")
+    asyncio.run(sign_envelope(env, slot="service"))
     canon_after = env.to_canonical_bytes()
     assert canon_before == canon_after, "Canonical body must not change after signing"
 
 
 def test_sign_and_verify_service_slot() -> None:
     env = _make_env()
-    sign_envelope(env, slot="service")
-    assert verify_envelope(env, slot="service") is True
+    asyncio.run(sign_envelope(env, slot="service"))
+    assert asyncio.run(verify_envelope(env, slot="service")) is True
 
 
 def test_sign_and_verify_appender_slot() -> None:
     env = _make_env()
-    sign_envelope(env, slot="appender")
-    assert verify_envelope(env, slot="appender") is True
+    asyncio.run(sign_envelope(env, slot="appender"))
+    assert asyncio.run(verify_envelope(env, slot="appender")) is True
 
 
 def test_tampering_breaks_signature() -> None:
     env = _make_env()
-    sign_envelope(env, slot="service")
+    asyncio.run(sign_envelope(env, slot="service"))
     # Mutate a field — verification must fail
     env.subject = "oc.event.core.request.post"
-    assert verify_envelope(env, slot="service") is False
+    assert asyncio.run(verify_envelope(env, slot="service")) is False
 
 
 def test_canonical_is_deterministic() -> None:
@@ -78,8 +79,8 @@ def test_canonical_is_deterministic() -> None:
 
 def test_envelope_chain_via_prev_hash() -> None:
     a = _make_env()
-    sign_envelope(a, slot="service")
-    sign_envelope(a, slot="appender")
+    asyncio.run(sign_envelope(a, slot="service"))
+    asyncio.run(sign_envelope(a, slot="appender"))
     h = a.canonical_sha256()
 
     b = AuditEnvelope.new(
@@ -89,7 +90,7 @@ def test_envelope_chain_via_prev_hash() -> None:
         direction=Direction.INGRESS,
         prev_hash=h,
     )
-    sign_envelope(b, slot="service")
+    asyncio.run(sign_envelope(b, slot="service"))
 
     # b's canonical body references a's hash, so tampering with a's
     # signature wouldn't invalidate b (signatures aren't in canonical)
@@ -101,7 +102,7 @@ def test_envelope_chain_via_prev_hash() -> None:
 def test_unknown_slot_raises() -> None:
     env = _make_env()
     try:
-        sign_envelope(env, slot="garbage")
+        asyncio.run(sign_envelope(env, slot="garbage"))
         raise AssertionError("expected ValueError")
     except ValueError:
         pass

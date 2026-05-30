@@ -119,7 +119,11 @@ services:
     restart: unless-stopped
     networks:
       - oc-internal
-    # No port published to host.
+    # Loopback only (never internet-exposed) so the host-run core dev
+    # process (core/scripts/run-with-vault-creds.sh) can reach it.
+    # Containerised core still uses the internal `immudb` hostname.
+    ports:
+      - "127.0.0.1:3322:3322"
     volumes:
       - immudb-data:/var/lib/immudb
     healthcheck:
@@ -138,7 +142,11 @@ services:
     restart: unless-stopped
     networks:
       - oc-internal
-    # No port published; internal NATS clients only.
+    # Loopback only (never internet-exposed) so the host-run core dev
+    # process (core/scripts/run-with-vault-creds.sh) can reach it.
+    # Containerised core still uses the internal `nats` hostname.
+    ports:
+      - "127.0.0.1:4222:4222"
     volumes:
       - nats-data:/data
       - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro

@@ -172,6 +172,98 @@ Sealed Vault is the expected post-restart state (Shamir-only unseal is hands-on 
 
 ---
 
+## 11. immudb-py `login()` defaults to `defaultdb` → PERMISSION_DENIED
+
+**Symptom:** core connects to immudb as the `appender` (or `projector`) user and immediately fails with:
+```
+PERMISSION_DENIED: Logged in user does not have permission on this database
+```
+even though the user clearly has `readwrite`/`read` on `openclaw_audit`.
+
+**Cause:** immudb-py's `client.login(user, password)` logs into `database=b"defaultdb"` unless told otherwise. The `appender`/`projector` users are granted permission **only** on `openclaw_audit`, so the login itself (against `defaultdb`) is denied before `useDatabase()` is ever reached.
+
+**Fix:** pass the target DB to `login()` directly, then `useDatabase()`. See `core/app/audit/immudb_writer.py` `_do_connect()`:
+```python
+db_bytes = db.encode() if isinstance(db, str) else db
+c = ImmudbClient(f"{host}:{port}")
+c.login(user, password, database=db_bytes)
+c.useDatabase(db_bytes)
+```
+
+---
+
+## 12. immudb `user create <user> <perm> <db>` does NOT persist the per-DB grant
+
+**Symptom:** `07-immudb-bootstrap.sh` creates the `appender`/`projector` users successfully, but core still gets `PERMISSION_DENIED` on `openclaw_audit` — even after the `login(database=…)` fix above.
+
+**Cause:** in immudb 1.9.5, the `<perm> <db>` arguments to `immuadmin user create` set the password/initial state but do **not** durably grant the per-database permission. The grant has to be issued as a separate, explicit `user permission grant` call.
+
+**Fix:** `07-immudb-bootstrap.sh` now calls an `immu_grant` helper after every create/rotate:
+```
+docker exec oc-immudb immuadmin user permission grant <user> <perm> openclaw_audit
+```
+Look for the `✓ <perm> permission granted to '<user>'` log lines on a clean bootstrap.
+
+---
+
+## 13. Host-MVP path must use loopback URLs, not Docker service names
+
+**Symptom:**
+```
+socket.gaierror: [Errno -3] Temporary failure in name resolution   (nats:4222)
+```
+when launching core on the host (outside the compose network) via `run-with-vault-creds.sh`.
+
+**Cause:** the config defaults (`OC_NATS_URL=nats://nats:4222`, `OC_IMMUDB_HOST=immudb`, `OC_VAULT_ADDR=http://vault:…`) are the **in-compose** Docker DNS names. A host process can't resolve them — and the services weren't published to the host at all.
+
+**Fix (two parts):**
+- `infra/docker-compose.openclaw.yml` publishes immudb and NATS to loopback only: `127.0.0.1:3322:3322` and `127.0.0.1:4222:4222` (Vault's TLS listener was already on `127.0.0.1:8200`).
+- `core/scripts/run-with-vault-creds.sh` exports loopback overrides before exec'ing uvicorn: `OC_NATS_URL=nats://127.0.0.1:4222`, `OC_VAULT_ADDR=https://127.0.0.1:8200`.
+
+The vault-agent sidecar (task 2.5b) runs core back inside the compose network where the service names resolve, so this is host-MVP-only.
+
+---
+
+## 14. Vault's host listener is HTTPS — core's client must verify accordingly
+
+**Symptom:** transit signing fails; plain-HTTP requests to `127.0.0.1:8200` get `HTTP 400`. Or, after switching to `https://`, an SSL CERT_VERIFY failure.
+
+**Cause:** the host-published Vault listener (task 05) is TLS, with a cert signed by the **internal** CA — not in the system trust store. The hvac client either talks plain HTTP (400) or verifies against a CA it doesn't have (verify failure).
+
+**Fix:** `core/app/config.py` adds `vault_cacert` (CA bundle path, takes precedence) and `vault_verify` (bool toggle). `signer._get_vault_client()` passes `verify = settings.vault_cacert or settings.vault_verify` to `hvac.Client`. The host MVP exports `OC_VAULT_VERIFY=false` (acceptable: same-host loopback, no MITM surface); production points `OC_VAULT_CACERT` at the internal CA bundle.
+
+---
+
+## 15. `sig_service` must NOT cover `prev_hash`
+
+**Symptom:** every projected entry shows `sig_service_valid=false` (`svc_ok=1/10`) while `sig_appender_valid=true`.
+
+**Cause:** the originating service signs the envelope **before** the appender assigns its chain position (`prev_hash`). The appender then mutates `prev_hash` and signs its own slot. If `sig_service` covered `prev_hash`, that later mutation invalidates it.
+
+**Fix:** `envelope.to_canonical_bytes(exclude_prev_hash=…)` drops `prev_hash` from the canonical body when `True`. `signer.sign_envelope`/`verify_envelope` pass `exclude_prev_hash=(slot == "service")`, so the service signature covers everything except `prev_hash`; the appender signature and the chain hash still cover it. (Entries written before this fix keep `svc_ok=1` forever — they're immutable in the WORM ledger; only test traffic was affected.)
+
+---
+
+## 16. `python-ulid` is not `ulid-py` — different API
+
+**Symptom:** `AttributeError: module 'ulid' has no attribute 'new'` → HTTP 500 on every audited endpoint.
+
+**Cause:** two PyPI packages both import as `ulid`. The installed one is **`python-ulid`** (3.1.0), whose API is `ulid.ULID()` / `ulid.ULID.from_datetime(dt)`. The `ulid.new()` form belongs to the *other* package, `ulid-py`.
+
+**Fix:** `envelope.AuditEnvelope.new()` uses `str(ulid.ULID.from_datetime(now))`, which also keeps the ULID's encoded timestamp consistent with the envelope's `ts` field.
+
+---
+
+## 17. Vault AppRole token has a 15-minute TTL — signing silently stops after expiry
+
+**Symptom:** core runs fine for ~15 minutes, then every envelope starts logging `vault.transit.sign_failed: permission denied / invalid token`, carries an empty `sig_service`, and the appender **discards** it (ACK-without-write). Nothing reaches Postgres; no crash.
+
+**Cause:** `run-with-vault-creds.sh` does an AppRole login whose token TTL is 15 min. Once it expires, transit/sign is denied. uvicorn `--reload` reloads *code* but not the launching script's exported token, so a code reload does **not** refresh it — only a full process restart (re-running the wrapper) does.
+
+**Fix / workaround:** restart core via `run-with-vault-creds.sh` to mint a fresh token. The permanent fix is the **vault-agent sidecar (task 2.5b)**, which auto-renews the token and renders it to a file core re-reads. Until then, treat "entries stopped appearing after a while" as "the token expired — restart."
+
+---
+
 ## Meta: how to add to this list
 
 Anytime you hit something non-obvious during ops:

@@ -142,7 +142,9 @@ class AuditEnvelope(BaseModel):
         """Construct a fresh, unsigned envelope with a new ULID."""
         now = ts or datetime.now(timezone.utc)
         return cls(
-            ulid=str(ulid.new()),
+            # python-ulid API (ulid.ULID); from_datetime keeps the ULID's
+            # encoded timestamp consistent with the `ts` field below.
+            ulid=str(ulid.ULID.from_datetime(now)),
             ts=now,
             subject=subject,
             conv_id=conv_id,
@@ -157,14 +159,23 @@ class AuditEnvelope(BaseModel):
             prev_hash=prev_hash,
         )
 
-    def to_canonical_bytes(self) -> bytes:
+    def to_canonical_bytes(self, exclude_prev_hash: bool = False) -> bytes:
         """JSON-serialize this envelope MINUS its signature fields, in a
         deterministic byte-for-byte form. This is what signatures cover.
 
         Used by signer.sign_envelope() (input to HMAC/sign) and by
         verifier (recompute and compare).
+
+        `exclude_prev_hash=True` additionally drops `prev_hash`: the
+        originating service signs BEFORE the appender assigns the chain
+        position, so sig_service must not cover prev_hash (otherwise the
+        appender's later mutation invalidates it). The appender signature
+        and the chain hash DO cover prev_hash (default False).
         """
-        d = self.model_dump(mode="json", exclude={"sig_service", "sig_appender"})
+        excluded = {"sig_service", "sig_appender"}
+        if exclude_prev_hash:
+            excluded = excluded | {"prev_hash"}
+        d = self.model_dump(mode="json", exclude=excluded)
         # canonical: sorted keys, compact separators, ms precision in `ts`
         return json.dumps(d, sort_keys=True, separators=(",", ":")).encode("utf-8")
 

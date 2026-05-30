@@ -29,9 +29,26 @@ CERT="$TLS_DIR/$HOSTNAME.crt"
 KEY="$TLS_DIR/$HOSTNAME.key"
 
 # ── Vault AppRole login → fetch immudb appender password ────────────
+# Creds come from a gpg-symmetric-encrypted file if present, else prompt.
+# The file holds two lines: ROLE_ID=... and SECRET_ID=... — it lives
+# outside the repo (0600) and the decrypted text is wiped after use.
+# gpg-agent caches the passphrase, so it's typed at most once per cache
+# window. Override the path with OC_ADMIN_ENV_GPG.
+ADMIN_ENV_GPG="${OC_ADMIN_ENV_GPG:-$HOME/.config/openclaw/admin.env.gpg}"
 echo
-read -rp  "openclaw-admin Role ID: "                  ROLE_ID
-read -srp "openclaw-admin Secret ID (will be hidden): " SECRET_ID; echo
+if [[ -f "$ADMIN_ENV_GPG" ]]; then
+  # pinentry needs to know our terminal, else "Inappropriate ioctl for device".
+  export GPG_TTY="${GPG_TTY:-$(tty 2>/dev/null || true)}"
+  log "Loading AppRole creds from $ADMIN_ENV_GPG (gpg)…"
+  _CREDS=$(gpg --quiet --batch --decrypt "$ADMIN_ENV_GPG" 2>/dev/null) \
+    || die "gpg decrypt of $ADMIN_ENV_GPG failed (wrong passphrase?)."
+  ROLE_ID=$(printf '%s\n'   "$_CREDS" | sed -n 's/^ROLE_ID=//p')
+  SECRET_ID=$(printf '%s\n' "$_CREDS" | sed -n 's/^SECRET_ID=//p')
+  _CREDS=""
+else
+  read -rp  "openclaw-admin Role ID: "                  ROLE_ID
+  read -srp "openclaw-admin Secret ID (will be hidden): " SECRET_ID; echo
+fi
 [[ -n "$ROLE_ID" && -n "$SECRET_ID" ]] || die "Empty role_id / secret_id."
 
 TOK=$(printf '%s' "$SECRET_ID" | docker exec -i oc-vault \
@@ -64,7 +81,13 @@ fi
 # Phase 2 task 2.5b (vault-agent sidecar) will handle auto-renewal.
 export OC_VAULT_TOKEN="$TOK"
 unset TOK
-log "Vault token exported for transit signing (TTL 15 min)."
+# The host-published Vault listener is TLS on 127.0.0.1:8200 (the default
+# http://… would get HTTP 400 from the TLS listener). Its cert is signed by
+# the internal CA, so skip verification for this loopback connection unless
+# OC_VAULT_CACERT is provided. (Containerised core uses http://vault:8200.)
+export OC_VAULT_ADDR="${OC_VAULT_ADDR:-https://127.0.0.1:8200}"
+export OC_VAULT_VERIFY="${OC_VAULT_VERIFY:-false}"
+log "Vault token + addr exported for transit signing (TTL 15 min, addr=$OC_VAULT_ADDR)."
 
 # ── Activate venv ───────────────────────────────────────────────────
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
@@ -79,6 +102,9 @@ fi
 # ── Export env + launch ─────────────────────────────────────────────
 export OC_WEBAUTHN_RP_ID="$HOSTNAME"
 export OC_WEBAUTHN_EXPECTED_ORIGINS_CSV="https://$HOSTNAME:8000"
+# NATS runs as a Docker container published on the host loopback; the
+# in-container hostname `nats` is NOT resolvable from the host process,
+# so point at 127.0.0.1 explicitly (the default would be nats:4222).
 export OC_NATS_URL="${OC_NATS_URL:-nats://127.0.0.1:4222}"
 export OC_IMMUDB_HOST="${OC_IMMUDB_HOST:-127.0.0.1}"
 export OC_IMMUDB_PORT="${OC_IMMUDB_PORT:-3322}"
