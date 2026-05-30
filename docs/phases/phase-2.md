@@ -284,6 +284,7 @@ Then restart core via `run-with-vault-creds.sh` — it now exports `OC_VAULT_TOK
 - **Canonical basis:** `sig_service` now excludes `{prev_hash, redacted_payload, encrypted_blobs, policy}` (the appender-owned fields); `sig_appender` + chain hash cover the final redacted form. One-time ledger-format change — see `docs/BOOTSTRAP_LESSONS.md §18`.
 - Host wiring: OPA published to `127.0.0.1:8181`; `run-with-vault-creds.sh` exports `OC_OPA_URL` + `OC_REDACTION_POLICY_PATH`. Config: `redaction_enabled`, `vault_transit_key_pii`, `redaction_policy_path` (`config.py`).
 - Tests: `core/tests/test_redaction.py` (9) — drop-unrecoverable, encrypt round-trip (real AES-GCM), keep, entropy net, fail-closed (OPA + Vault), version-pin. Live OPA decision path verified via `opa eval` on the exact query.
+- Live end-to-end demonstrator: `core/scripts/redaction-live-check.py` publishes a synthetic mail envelope (fake secret + PII) and asserts the stored entry has the secret dropped, the body encrypted (with blob), version pinned, and all sigs valid. Run in a credentialed shell with core + OPA up. (Core's own HTTP middleware only records safe metadata, so this script is how you see a real drop/encrypt before Phase 3 ingesters exist.)
 
 **Original task spec (for reference):**
 
