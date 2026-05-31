@@ -108,32 +108,30 @@ class ImmudbWriter:
 
     # ── Reads (for prev_hash bootstrap) ──────────────────────────────────
 
-    async def get_latest_key(self) -> bytes | None:
-        """Return the lexicographically-latest envelope key, or None if empty.
+    async def get_latest_value(self) -> bytes | None:
+        """Return the stored value of the lexicographically-latest envelope,
+        or None if the ledger is empty.
 
-        Used at appender startup to recover the prev_hash chain seed
-        after a process restart.
+        Used at appender startup to re-seed the prev_hash chain: the appender
+        recomputes the latest entry's canonical hash so the first envelope it
+        writes after a restart chains onto real prior state instead of opening
+        a fresh (chain-break-flagged) root. Uses the same scan shape the
+        projector relies on (scan(key, prefix, desc, limit) -> Dict).
         """
         if self._client is None:
             return None
 
         def _do_scan() -> bytes | None:
             with self._lock:
-                # immudb-py's scan returns entries in ascending order; we
-                # want the last one. zScan / history exist for ordered
-                # walks but for simplicity we use a bounded reverse iter
-                # by passing a high seek key. If the API doesn't support
-                # `desc`, we fall back to a None which means "appender
-                # starts a new chain root" — acceptable for MVP.
                 try:
-                    entries = self._client.scan(b"", b"", 1, True)  # last 1, desc
+                    result = self._client.scan(b"", b"", False, 1000)
                 except Exception:
                     return None
-                if not entries:
-                    return None
-                # Different client versions yield different shapes
-                last = entries[-1] if isinstance(entries, list) else entries
-                return getattr(last, "key", None)
+            items = list((result or {}).items())
+            if not items:
+                return None
+            items.sort(key=lambda kv: kv[0])  # ascending ULID; take the last
+            return items[-1][1]
 
         return await asyncio.to_thread(_do_scan)
 

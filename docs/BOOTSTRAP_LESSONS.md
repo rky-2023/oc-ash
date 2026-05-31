@@ -291,7 +291,7 @@ The vault-agent sidecar (task 2.5b) runs core back inside the compose network wh
 
 **Cause:** the projector runs as a background asyncio task inside core; under `--reload` its poll loop can stall/cancel and miss the newest entry within the check window (use the deterministic `projection rebuild` path instead). Separately, `AuditAppender.start()` notes the latest immudb *key* on boot but does **not** recompute its hash, so `_chain_head` starts `None` and the first post-restart envelope carries `prev_hash=None` → a permanent (WORM) chain break the projector correctly flags. Neither causes data loss or duplication.
 
-**Fix:** re-seed `_chain_head` from the latest immudb entry's *value* (`canonical_sha256()`) on startup — tracked as a follow-up PR. The split of appender/projector into standalone containers (ADR-003 D3, Phase 11) removes the `--reload` coupling.
+**Fix (chain re-seed — done):** `AuditAppender._seed_chain_head()` now reads the latest immudb entry's *value* on startup, recomputes `canonical_sha256()` (the exact value the projector uses for chain validation), and seeds `_chain_head` — so the first envelope after a restart chains onto real history instead of opening a flagged root. Falls back to `None` (fresh root) if immudb is unreachable or the entry can't be parsed, never failing startup. Added `ImmudbWriter.get_latest_value()` (same scan shape the projector uses). The projector-under-`--reload` liveness quirk remains: use `oc audit projection rebuild` for deterministic catch-up; the appender/projector split into standalone containers (ADR-003 D3, Phase 11) removes the `--reload` coupling entirely.
 
 ---
 
