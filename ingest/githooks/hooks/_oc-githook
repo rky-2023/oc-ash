@@ -1,0 +1,49 @@
+#!/bin/sh
+# Shared git-hook forwarder for the oc-ingest worker (Phase 3 task 3.2).
+#
+# Invoked by the named hook wrappers as: _oc-githook <hook-name> [git args...]
+# Collects repo context and POSTs a JSON event to the oc-ingest unix socket,
+# which classifies it as oc.event.git.<repo>.<hook-name>, filters, signs, and
+# publishes. Git events route through the SAME worker/socket as Claude hooks
+# (the doc's separate githooks.sock is superseded by the unified worker).
+#
+# Design rule: a hook must NEVER block or fail the user's git command. Short
+# curl timeout; always exit 0.
+HOOK="$1"
+shift 2>/dev/null || true
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+REPO=$(basename "$REPO_ROOT")
+SHA=$(git rev-parse HEAD 2>/dev/null)
+REF=$(git symbolic-ref --short HEAD 2>/dev/null)
+AUTHOR=$(git log -1 --format='%an <%ae>' 2>/dev/null)
+SUBJECT=$(git log -1 --format='%s' 2>/dev/null)
+EXTRA="$1"
+
+SOCK="${OC_INGEST_SOCKET:-/run/openclaw/ingest.sock}"
+
+# Build JSON with python3 so commit subjects with quotes/newlines are escaped
+# safely (manual shell quoting would corrupt the payload).
+JSON=$(REPO="$REPO" HOOK="$HOOK" SHA="$SHA" REF="$REF" AUTHOR="$AUTHOR" SUBJECT="$SUBJECT" EXTRA="$EXTRA" python3 -c '
+import json, os
+d = {
+    "source": "git",
+    "repo": os.environ["REPO"],
+    "hook": os.environ["HOOK"],
+    "sha": os.environ.get("SHA") or None,
+    "ref": os.environ.get("REF") or None,
+    "author": os.environ.get("AUTHOR") or None,
+    "subject": os.environ.get("SUBJECT") or None,
+}
+extra = os.environ.get("EXTRA") or ""
+if extra and os.environ["HOOK"] == "post-rewrite":
+    d["command"] = extra
+if extra and os.environ["HOOK"] == "pre-push":
+    d["remote"] = extra
+print(json.dumps(d))
+' 2>/dev/null) || exit 0
+
+[ -n "$JSON" ] && printf '%s' "$JSON" | curl -sS --max-time 3 --unix-socket "$SOCK" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    http://localhost/hook >/dev/null 2>&1 || true
+exit 0

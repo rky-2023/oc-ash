@@ -210,3 +210,11 @@ export OC_ENABLE_INGEST_WORKER=true
 - Confirm `~/.claude/settings.json` still references `oc-claude-hook.sh` (a Claude Code update can clobber it). Re-run `python ingest/claude-hooks/install-claude-hooks.py --apply` (review the dry-run first).
 - The hook script always exits 0 and times out in 3 s, so a down worker never blocks Claude Code — but you'll silently miss events. Test with: `echo '{"hook_event_name":"Notification","message":"ping","session_id":"t"}' | ingest/claude-hooks/oc-claude-hook.sh` then check `oc audit tail`.
 - Empty `Notification` events are dropped by `policy/ingest.rego` on purpose.
+
+### git hooks not firing
+
+- Install across repos: `bash ingest/githooks/bootstrap.sh` (sets `core.hooksPath` on every `/home/asher/*/.git`). Verify: `git -C <repo> config core.hooksPath`.
+- **`core.hooksPath` replaces a repo's own `.git/hooks`** — if a repo needs local hooks (husky, pre-commit, signing), don't bootstrap it, or merge those into the shared dir. To undo for one repo: `git -C <repo> config --unset core.hooksPath`.
+- Hooks POST to the same socket as Claude hooks (`oc.event.git.<repo>.<hook>`). While the worker is down each hook still returns in ≤3 s (curl timeout) and exits 0 — git stays usable but you miss events and pay the timeout per commit.
+- `git push --no-verify` (and similar) skips hooks by design.
+- Test one: `cd <watched-repo> && git commit --allow-empty -m test` → check `oc audit tail` for `oc.event.git.<repo>.post-commit`.

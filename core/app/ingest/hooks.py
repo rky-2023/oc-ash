@@ -88,8 +88,47 @@ def _append_manifest(parsed: dict[str, Any]) -> None:
         log.warning("ingest.hooks.manifest_failed", session_id=session_id, err=str(e))
 
 
+def _tok(s: str) -> str:
+    return s.replace(".", "_").replace(" ", "_").replace("/", "_")
+
+
+def build_git_event(body: dict[str, Any]) -> dict[str, Any]:
+    """Map a git-hook payload to subject + envelope payload. Pure — no IO.
+
+    Posted by the git hook scripts (source=git) with repo/hook/sha/ref/
+    author/subject. Subject: oc.event.git.<repo>.<hook-name>.
+    """
+    repo = body.get("repo") or "_unknown"
+    hook = body.get("hook") or "unknown"
+    payload = {
+        k: body.get(k)
+        for k in ("repo", "hook", "sha", "ref", "author", "subject", "remote", "command")
+        if body.get(k) is not None
+    }
+    return {
+        "subject": f"oc.event.git.{_tok(repo)}.{_tok(hook)}",
+        "source": "git",
+        "payload": payload,
+        "filter_fields": {},  # ingest.rego keeps all git events
+    }
+
+
+async def handle_event(body: dict[str, Any]) -> bool:
+    """Dispatch a socket payload by `source` (git or claude)."""
+    if body.get("source") == "git":
+        ev = build_git_event(body)
+        return await emit_event(
+            subject=ev["subject"],
+            source="git",
+            actor_id=f"git:{ev['payload'].get('repo')}",
+            payload=ev["payload"],
+            filter_fields=ev["filter_fields"],
+        )
+    return await handle_hook(body)
+
+
 async def handle_hook(body: dict[str, Any]) -> bool:
-    """Process one hook payload end-to-end. Returns True if published."""
+    """Process one Claude Code hook payload end-to-end. Returns True if published."""
     parsed = parse_hook(body)
     head = _git_head(parsed["payload"].get("cwd"))
     if head:
@@ -138,7 +177,7 @@ class ClaudeHookReceiver:
             status = b"200 OK"
             try:
                 if raw:
-                    await handle_hook(json.loads(raw))
+                    await handle_event(json.loads(raw))
             except Exception as e:  # noqa: BLE001
                 log.warning("ingest.hooks.handle_failed", err=str(e))
                 status = b"500 Internal Server Error"
