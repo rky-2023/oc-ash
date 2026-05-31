@@ -177,3 +177,36 @@ docker exec -it oc-immudb immuadmin login immudb
 4. Restart the container: `docker start oc-immudb`
 
 The audit appender will resume from where it left off — NATS JetStream retains unacknowledged messages.
+
+## Event ingestion (oc-ingest worker — Phase 3)
+
+The gh-poller + Claude-hook receiver run in-process inside core when
+`OC_ENABLE_INGEST_WORKER=true`. Both publish signed `oc.event.*` envelopes
+through the normal audit pipeline.
+
+### Enable
+
+```bash
+export OC_ENABLE_INGEST_WORKER=true
+# Needs (beyond the usual core creds): OC_GITHUB_APP_ID, OC_GITHUB_INSTALLATION_ID,
+# OC_GITHUB_APP_PRIVATE_KEY (all exported by oc-with-vault-creds.sh).
+# Optional: OC_INGEST_GH_REPOS='[{"owner":"rky-2023","repo":"oc-ash"}]'
+```
+
+### gh-poller stuck / not emitting
+
+- Watch the `oc.event.gh.health.failing` subject and core logs (`gh_poller.http_error`, `gh_poller.error`). 1 h without a success on an endpoint emits the health event.
+- 429 / secondary rate limit → exponential backoff capped at 10 min; 5xx capped at 5 min.
+- Checkpoints live in `openclaw.lookup` under `gh-poller.checkpoints.<owner>.<repo>.<entity>`. To force a re-baseline of one endpoint:
+  ```sql
+  DELETE FROM openclaw.lookup WHERE key = 'gh-poller.checkpoints.rky-2023.oc-ash.pull_request';
+  ```
+  (Next poll seeds a fresh baseline — emits nothing for existing items, then resumes diffing.)
+- First poll of any endpoint is a **baseline** (seeds checkpoint, emits nothing) — pre-existing items are not re-emitted on startup by design.
+
+### Claude hooks not firing
+
+- The receiver listens on `OC_INGEST_SOCKET` (default `/run/openclaw/ingest.sock`); confirm the dir exists and core can write it.
+- Confirm `~/.claude/settings.json` still references `oc-claude-hook.sh` (a Claude Code update can clobber it). Re-run `python ingest/claude-hooks/install-claude-hooks.py --apply` (review the dry-run first).
+- The hook script always exits 0 and times out in 3 s, so a down worker never blocks Claude Code — but you'll silently miss events. Test with: `echo '{"hook_event_name":"Notification","message":"ping","session_id":"t"}' | ingest/claude-hooks/oc-claude-hook.sh` then check `oc audit tail`.
+- Empty `Notification` events are dropped by `policy/ingest.rego` on purpose.

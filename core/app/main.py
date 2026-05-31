@@ -104,9 +104,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.projector = projector
 
+    # oc-ingest worker — gh-poller + Claude-hook receiver (Phase 3). Off by
+    # default; enable on the host with OC_ENABLE_INGEST_WORKER=true.
+    ingest_worker = None
+    if settings.enable_ingest_worker:
+        from app.ingest.worker import get_ingest_worker
+
+        ingest_worker = get_ingest_worker()
+        try:
+            await ingest_worker.start()
+        except Exception as e:
+            log.warning("ingest_worker.start_failed", err=str(e))
+    else:
+        log.info("ingest_worker.disabled", enable=settings.enable_ingest_worker)
+    app.state.ingest_worker = ingest_worker
+
     yield
 
     log.info("openclaw-core shutting down")
+    if ingest_worker is not None:
+        await ingest_worker.stop()
     await projector.stop()
     await appender.stop()
     await writer.close()

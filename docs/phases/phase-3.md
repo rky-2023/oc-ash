@@ -118,7 +118,7 @@ NATS subject taxonomy (final form):
 
 ---
 
-### 3.3 Claude Code hook integration
+### 3.3 Claude Code hook integration  ✅ implemented 2026-06-01
 
 **Why:** ADR-001 R4 + PLAN.md Phase 3 commits to Claude Code session events being ingested. These are the most useful events for "what is the agent doing right now?" telemetry.
 
@@ -153,7 +153,7 @@ Claude Code's hook system (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Sto
 
 ---
 
-### 3.4 GitHub events: polling worker (ADR-004 — webhook receiver deferred)
+### 3.4 GitHub events: polling worker (ADR-004 — webhook receiver deferred)  ✅ implemented 2026-06-01
 
 **Why:** ADR-004 locks defer-and-poll for now. The polling worker is the interim source for GitHub events; switched off when Cloudflare Tunnel + webhook receiver is wired up (some future Phase X).
 
@@ -289,3 +289,4 @@ All tests must pass (allowing for the manual nature of #3 and #4).
 
 - **2026-05-23 (v1)** — Drafted after ADR-004 acceptance. Polling worker is the interim GH event source; webhook receiver design preserved on paper for a future phase.
 - **2026-06-01 (v1.1)** — Phase 3 kicked off (after Phase 2 complete + PR #40/#41 merged). **Task 3.5 ingest filter policy** implemented: `policy/ingest.rego` (`data.openclaw.ingest.decision` → keep/drop; fswatch dist/build/coverage/*.log noise drop, claude empty-Notification drop, gh-poller no-op drop, default-keep elsewhere) + `policy/ingest_test.rego` (16 tests; `opa test` 27/27 incl. redaction). Tests use the flat `policy/<name>_test.rego` convention (per `policy/README.md`), not the `policy/tests/` path the task draft mentioned. **Blocker noted:** task 3.1 fswatch needs a Rust toolchain (cargo/rustc not installed) + a dedicated `oc-fswatch` user/systemd unit (sudo) — operator-gated.
+- **2026-06-01 (v1.2)** — **Tasks 3.3 (Claude hooks) + 3.4 (gh-poller)** implemented as ONE in-process `oc-ingest` worker (`core/app/ingest/`), per the chosen "shared ingest service + thin hook script" architecture. Both sources funnel through `emit.emit_event` (OPA ingest-filter → build AuditEnvelope → sign sig_service → JetStream publish with ULID msg_id), so ingested payloads get the full Phase 2 redaction + anchoring. gh-poller: pure `diff()` engine (baseline-on-first-poll, change detection, bounded seen-map), endpoint specs for pulls/issues/commits/runs/releases, exp-backoff (429→10m, 5xx→5m), 1h-stall → `oc.event.gh.health.failing`, checkpoints in `openclaw.lookup`. Claude hooks: unix-socket receiver (`/run/openclaw/ingest.sock`) + thin `ingest/claude-hooks/oc-claude-hook.sh` + dry-run-by-default installer + per-session manifest under `sessions/`. Gated by `OC_ENABLE_INGEST_WORKER` (default off); wired into `app.main` lifespan. **Deviations (documented):** worker is in-core MVP reusing audit primitives (standalone-service split → Phase 11, ADR-003 D3); GitHub App JWT via KV-PEM (not Vault transit). Unit: 18 new tests, full core suite 76 passed. Live (signing+NATS+GitHub App) operator-gated. RUNBOOK updated for gh-poller/claude-hooks (partial 3.7).
