@@ -189,7 +189,7 @@ Claude Code's hook system (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Sto
 
 ---
 
-### 3.5 Ingest filter policy (`policy/ingest.rego`)
+### 3.5 Ingest filter policy (`policy/ingest.rego`)  ✅ implemented 2026-06-01
 
 **Why:** Even with the fswatch exclusion list, we don't want every event to flood the audit log. Filter out the *most* boring events at the ingester (cheap), keep the ledger noise-free.
 
@@ -288,3 +288,4 @@ All tests must pass (allowing for the manual nature of #3 and #4).
 ## Change log
 
 - **2026-05-23 (v1)** — Drafted after ADR-004 acceptance. Polling worker is the interim GH event source; webhook receiver design preserved on paper for a future phase.
+- **2026-06-01 (v1.1)** — Phase 3 kicked off (after Phase 2 complete + PR #40/#41 merged). **Task 3.5 ingest filter policy** implemented: `policy/ingest.rego` (`data.openclaw.ingest.decision` → keep/drop; fswatch dist/build/coverage/*.log noise drop, claude empty-Notification drop, gh-poller no-op drop, default-keep elsewhere) + `policy/ingest_test.rego` (16 tests; `opa test` 27/27 incl. redaction). Tests use the flat `policy/<name>_test.rego` convention (per `policy/README.md`), not the `policy/tests/` path the task draft mentioned. **Blocker noted:** task 3.1 fswatch needs a Rust toolchain (cargo/rustc not installed) + a dedicated `oc-fswatch` user/systemd unit (sudo) — operator-gated.
