@@ -274,6 +274,27 @@ The vault-agent sidecar (task 2.5b) runs core back inside the compose network wh
 
 ---
 
+## 19. `oc-with-vault-creds.sh` must be sourced (not exec'd) and must export the Vault *address*
+
+**Symptom:** standalone tooling (e.g. `redaction-live-check.py`, `oc audit verify`) run after the creds wrapper either (a) killed the shell, or (b) logged `vault.transit.sign_failed err='Client sent an HTTP request to an HTTPS server' … on post http://127.0.0.1:8200/...` and produced empty signatures.
+
+**Cause:** the wrapper ended in `exec oc "$@"`, so *sourcing* it replaced the interactive shell; and it exported `OC_VAULT_TOKEN` but **not** `OC_VAULT_ADDR`/`OC_VAULT_VERIFY`, so clients fell back to the default `http://127.0.0.1:8200` and hit the TLS listener. (`run-with-vault-creds.sh` exports the addr; the source-able wrapper didn't.)
+
+**Fix:** `oc-with-vault-creds.sh` now (a) `(return 0 2>/dev/null) && return 0` before the `exec` so sourcing exports creds and returns, and (b) exports `OC_VAULT_ADDR=https://127.0.0.1:8200` + `OC_VAULT_VERIFY=false` alongside the token. Source it (`source core/scripts/oc-with-vault-creds.sh`) to get a creds-loaded shell; it still works as a prefix-runner (`oc-with-vault-creds.sh audit verify …`) when executed.
+
+---
+
+## 20. In-process projector under `uvicorn --reload` + appender `_chain_head` not re-seeded on restart
+
+**Symptom (1):** the live `redaction-live-check.py` times out ("no projected entry within 30s") even though the appender logged `appender.wrote` — the entry is in immudb but not Postgres until you run `oc audit projection rebuild`.
+**Symptom (2):** `chain_valid=false` on the first entry written after every core restart.
+
+**Cause:** the projector runs as a background asyncio task inside core; under `--reload` its poll loop can stall/cancel and miss the newest entry within the check window (use the deterministic `projection rebuild` path instead). Separately, `AuditAppender.start()` notes the latest immudb *key* on boot but does **not** recompute its hash, so `_chain_head` starts `None` and the first post-restart envelope carries `prev_hash=None` → a permanent (WORM) chain break the projector correctly flags. Neither causes data loss or duplication.
+
+**Fix:** re-seed `_chain_head` from the latest immudb entry's *value* (`canonical_sha256()`) on startup — tracked as a follow-up PR. The split of appender/projector into standalone containers (ADR-003 D3, Phase 11) removes the `--reload` coupling.
+
+---
+
 ## Meta: how to add to this list
 
 Anytime you hit something non-obvious during ops:

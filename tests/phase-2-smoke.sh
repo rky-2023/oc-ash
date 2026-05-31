@@ -142,7 +142,7 @@ else
   if [[ ! -x "$OC" ]]; then
     fail "oc not found at $OC"
   else
-    if "$OC" attest publish --date "$YESTERDAY" 2>&1 | grep -qE "commit_sha|entry_count"; then
+    if "$OC" attest publish --date "$YESTERDAY" --json 2>&1 | grep -qE "commit_sha|entry_count"; then
       pass "oc attest publish --date $YESTERDAY succeeded"
     else
       fail "oc attest publish --date $YESTERDAY failed"
