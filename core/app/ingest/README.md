@@ -23,7 +23,7 @@ claude hook ──POST──▶  │       (keep/drop)        (fail-open)       
 - **`poller.py`** — GitHub App polling (ADR-004 D1). Pure `diff()` engine (unit-tested); first poll of an endpoint is a baseline (seeds checkpoint, emits nothing).
 - **`github.py`** — App JWT → installation token (reuses the attestation publisher's KV-PEM path; see note in-file re: the doc's transit-sign variant).
 - **`checkpoint.py`** — per-(repo,endpoint) checkpoints in `openclaw.lookup`.
-- **`hooks.py`** — unix-socket receiver for Claude Code hooks + per-session manifest.
+- **`hooks.py`** — unix-socket receiver dispatching by `source`: Claude Code hooks (`oc.event.claude.*` + per-session manifest) and git hooks (`oc.event.git.<repo>.<hook>`). The git hook scripts live in `ingest/githooks/` and POST to the same socket.
 - **`worker.py`** — lifecycle; started from `app.main` when `OC_ENABLE_INGEST_WORKER=true`.
 
 ## Enabling (host)
