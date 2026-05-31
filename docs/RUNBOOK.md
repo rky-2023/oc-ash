@@ -90,7 +90,13 @@ psql -U rky-server -d postgres -c \
 
 The projector compares its running count against immudb. When it catches up the counts must match. See `docs/phases/phase-2.md § 2.9` for full details.
 
-**Note:** `oc audit projection rebuild` (a single CLI command to automate this) is a Phase 2 deferred item; the manual procedure above is the current method.
+**One-command equivalent (task 2.7):** the manual steps above are automated by:
+
+```bash
+bash core/scripts/oc-with-vault-creds.sh core/.venv/bin/oc audit projection rebuild
+```
+
+It truncates the projection, resets the checkpoint, replays from immudb, and asserts the final row count matches immudb (exit 1 on mismatch). Use `--yes` to skip the confirmation prompt. Note: the immudb scan is currently capped at 1000 entries/cycle (pagination is future work, per `projector.py`); the command warns if that cap is reached.
 
 ---
 

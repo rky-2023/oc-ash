@@ -316,6 +316,95 @@ def _print_verify_summary(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# projection rebuild
+# ─────────────────────────────────────────────────────────────────────
+
+
+@audit.group()
+def projection() -> None:
+    """Manage the Postgres projection of the immudb ledger."""
+
+
+@projection.command("rebuild")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def projection_rebuild(yes: bool) -> None:
+    """Truncate the Postgres projection and replay it from immudb.
+
+    immudb is the source of truth; the projection is a rebuildable cache.
+    Safe and idempotent. Requires OC_POSTGRES_DSN + immudb creds (run via
+    oc-with-vault-creds.sh). Automates the manual procedure in docs/RUNBOOK.md.
+    """
+    asyncio.run(_run_projection_rebuild(yes))
+
+
+async def _run_projection_rebuild(assume_yes: bool) -> None:
+    from app.audit.immudb_writer import get_writer
+    from app.audit.projector import AuditProjector
+    from app.config import settings
+
+    dsn = settings.effective_postgres_dsn
+    if not dsn:
+        click.echo("[oc] OC_POSTGRES_DSN not set — run via oc-with-vault-creds.sh", err=True)
+        sys.exit(2)
+
+    if not assume_yes:
+        click.confirm(
+            "This TRUNCATEs openclaw.audit_* and replays from immudb. Continue?",
+            abort=True,
+        )
+
+    writer = get_writer()
+    await writer.connect()
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, command_timeout=60)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "TRUNCATE openclaw.audit_entries, openclaw.audit_conversations, "
+                    "openclaw.audit_policy_decisions"
+                )
+                await conn.execute(
+                    "UPDATE openclaw.audit_checkpoint "
+                    "SET last_ulid = NULL, last_ts = NULL, updated_at = now() WHERE id = 1"
+                )
+        click.echo("[oc] projection truncated; checkpoint reset")
+
+        # Reuse the projector's verified scan/verify/insert cycle.
+        proj = AuditProjector()
+        proj._pool = pool
+        total = 0
+        while True:
+            n = await proj._cycle()
+            if n == 0:
+                break
+            total += n
+            click.echo(f"[oc] projected {total} entries…")
+
+        pg_count = await pool.fetchval("SELECT count(*) FROM openclaw.audit_entries")
+        immudb_count = await _immudb_entry_count(writer)
+    finally:
+        await pool.close()
+        await writer.close()
+
+    click.echo(f"[oc] rebuild complete: postgres={pg_count} immudb={immudb_count}")
+    if immudb_count >= 1000:
+        stderr("  note: immudb scan is capped at 1000/cycle — counts above that are not yet paginated")
+    if pg_count != immudb_count:
+        click.echo("Status:     ⚠️  counts differ (unparseable/corrupt entries are skipped — see logs)", err=True)
+        sys.exit(1)
+    click.echo("Status:     ✅ rows match immudb")
+
+
+async def _immudb_entry_count(writer: Any) -> int:
+    def _count() -> int:
+        result = writer._client.scan(b"", b"", False, 1000)
+        return len(result or {})
+
+    return await asyncio.to_thread(_count)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────
 

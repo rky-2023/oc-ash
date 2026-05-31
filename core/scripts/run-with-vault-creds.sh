@@ -113,12 +113,19 @@ export OC_IMMUDB_PASSWORD="$IMMUDB_PW"
 export OC_IMMUDB_DATABASE="openclaw_audit"
 export OC_ENABLE_AUDIT_APPENDER="true"
 
+# OPA runs as a Docker container published on the host loopback (the
+# in-container `opa` hostname isn't resolvable from the host process). The
+# redaction policy hash is read from the repo's policy/ dir on this path.
+export OC_OPA_URL="${OC_OPA_URL:-http://127.0.0.1:8181}"
+export OC_REDACTION_POLICY_PATH="${OC_REDACTION_POLICY_PATH:-$CORE_DIR/../policy/redaction.rego}"
+
 # Wipe local password var after export
 IMMUDB_PW=""
 
 log "RP_ID:    $OC_WEBAUTHN_RP_ID"
 log "Origin:   $OC_WEBAUTHN_EXPECTED_ORIGINS_CSV"
 log "immudb:   $OC_IMMUDB_USER@$OC_IMMUDB_HOST:$OC_IMMUDB_PORT/$OC_IMMUDB_DATABASE"
+log "OPA:      $OC_OPA_URL (redaction policy: $OC_REDACTION_POLICY_PATH)"
 log "URL:      https://$HOSTNAME:8000"
 log "Launching uvicorn (Ctrl+C to stop)..."
 echo

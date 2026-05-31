@@ -41,6 +41,7 @@ import structlog
 
 from app.audit.envelope import AuditEnvelope
 from app.audit.immudb_writer import get_writer
+from app.audit.redaction import redact
 from app.audit.signer import sign_envelope, verify_envelope
 from app.bus.nats_client import get_bus
 
@@ -169,11 +170,16 @@ class AuditAppender:
             await msg.ack()
             return
 
+        # Redact BEFORE chaining/signing/persisting (ADR-003 D6). This is the
+        # last point at which the payload is mutable — once it hits immudb it
+        # is WORM. Redaction fails closed (drops, never persists raw secrets).
+        await redact(env)
+
         # Chain prev_hash to whatever we last appended
         if self._chain_head is not None and env.prev_hash is None:
             env.prev_hash = self._chain_head
 
-        # Append our own signature
+        # Append our own signature (covers the final redacted form + prev_hash)
         await sign_envelope(env, slot="appender")
 
         # Write to immudb

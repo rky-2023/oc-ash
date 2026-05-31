@@ -81,7 +81,14 @@ if [[ -z "${OC_IMMUDB_PASSWORD:-}" ]]; then
   # Export token for transit/verify calls in `oc audit verify`.
   export OC_VAULT_TOKEN="$TOK"
   unset TOK
-  log "Vault token exported for transit verify (TTL 15 min)."
+  # The host-published Vault listener is TLS on 127.0.0.1:8200 (the default
+  # http://… gets "Client sent an HTTP request to an HTTPS server"). Its cert
+  # is signed by the internal CA, so skip verification for this loopback
+  # connection unless OC_VAULT_CACERT is provided. Mirrors run-with-vault-creds.sh
+  # so standalone tooling (oc audit verify, redaction-live-check.py) can sign/verify.
+  export OC_VAULT_ADDR="${OC_VAULT_ADDR:-https://127.0.0.1:8200}"
+  export OC_VAULT_VERIFY="${OC_VAULT_VERIFY:-false}"
+  log "Vault token + addr exported for transit verify (TTL 15 min, addr=$OC_VAULT_ADDR)."
 fi
 
 export OC_IMMUDB_HOST="${OC_IMMUDB_HOST:-127.0.0.1}"
@@ -91,4 +98,8 @@ export OC_IMMUDB_PASSWORD
 export OC_IMMUDB_DATABASE="${OC_IMMUDB_DATABASE:-openclaw_audit}"
 export OC_NATS_URL="${OC_NATS_URL:-nats://127.0.0.1:4222}"
 
+# If sourced (to export the creds above into the caller's shell, e.g. before
+# running tests/phase-2-smoke.sh or redaction-live-check.py), return here
+# instead of exec'ing — exec would otherwise replace the interactive shell.
+(return 0 2>/dev/null) && return 0
 exec oc "$@"
