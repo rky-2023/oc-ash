@@ -108,35 +108,6 @@ class ImmudbWriter:
 
     # ── Reads (for prev_hash bootstrap) ──────────────────────────────────
 
-    async def get_latest_key(self) -> bytes | None:
-        """Return the lexicographically-latest envelope key, or None if empty.
-
-        Used at appender startup to recover the prev_hash chain seed
-        after a process restart.
-        """
-        if self._client is None:
-            return None
-
-        def _do_scan() -> bytes | None:
-            with self._lock:
-                # immudb-py's scan returns entries in ascending order; we
-                # want the last one. zScan / history exist for ordered
-                # walks but for simplicity we use a bounded reverse iter
-                # by passing a high seek key. If the API doesn't support
-                # `desc`, we fall back to a None which means "appender
-                # starts a new chain root" — acceptable for MVP.
-                try:
-                    entries = self._client.scan(b"", b"", 1, True)  # last 1, desc
-                except Exception:
-                    return None
-                if not entries:
-                    return None
-                # Different client versions yield different shapes
-                last = entries[-1] if isinstance(entries, list) else entries
-                return getattr(last, "key", None)
-
-        return await asyncio.to_thread(_do_scan)
-
     async def get_latest_value(self) -> bytes | None:
         """Return the stored value of the lexicographically-latest envelope,
         or None if the ledger is empty.
