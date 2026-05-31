@@ -72,19 +72,37 @@ class AuditAppender:
             return
         self._stop.clear()
 
-        # Seed chain pointer from immudb if there's prior state.
-        writer = get_writer()
-        if writer.is_connected:
-            latest_key = await writer.get_latest_key()
-            if latest_key is not None:
-                # We don't recompute the hash on bootstrap; we just note the
-                # last key and let the first new envelope chain to a fresh
-                # canonical-hash derived in-memory thereafter. Acceptable
-                # MVP — the projector will detect a chain break and flag.
-                log.info("appender.startup.found_prior_state", last_key=latest_key.hex())
+        # Seed the chain pointer from prior immudb state so the first envelope
+        # written after a restart chains onto real history (not a fresh root).
+        await self._seed_chain_head()
 
         self._task = asyncio.create_task(self._run(), name="audit-appender")
         log.info("appender.started", subjects=SUBJECTS, durable=DURABLE)
+
+    async def _seed_chain_head(self) -> None:
+        """Recompute the latest immudb entry's canonical hash into _chain_head.
+
+        On a process restart the in-memory chain pointer is empty; without
+        this, the first envelope we append carries prev_hash=None and the
+        projector flags a (permanent, WORM) chain break. We read the latest
+        stored envelope, recompute canonical_sha256() — the exact value the
+        projector uses for chain validation — and seed the pointer so the
+        chain stays continuous across restarts. If immudb is unreachable or
+        the entry can't be parsed, we leave _chain_head=None (fresh root,
+        flagged) rather than fail startup.
+        """
+        writer = get_writer()
+        if not writer.is_connected:
+            return
+        latest_value = await writer.get_latest_value()
+        if latest_value is None:
+            return
+        try:
+            prev = AuditEnvelope.model_validate_json(latest_value)
+            self._chain_head = prev.canonical_sha256()
+            log.info("appender.startup.chain_seeded", ulid=prev.ulid)
+        except Exception as e:
+            log.warning("appender.startup.chain_seed_failed", err=str(e))
 
     async def stop(self) -> None:
         if self._task is None:
