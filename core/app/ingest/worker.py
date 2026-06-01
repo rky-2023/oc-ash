@@ -22,8 +22,17 @@ class IngestWorker:
         self._hooks = ClaudeHookReceiver()
 
     async def start(self) -> None:
-        await self._hooks.start()
-        await self._poller.start()
+        # Start each source independently — a socket-permission problem on the
+        # hook receiver must not stop the gh-poller, and vice versa.
+        try:
+            await self._hooks.start()
+        except Exception as e:  # noqa: BLE001
+            log.warning("ingest.worker.hooks_start_failed", err=str(e),
+                        note="hook receiver disabled; set OC_INGEST_SOCKET to a writable path")
+        try:
+            await self._poller.start()
+        except Exception as e:  # noqa: BLE001
+            log.warning("ingest.worker.poller_start_failed", err=str(e))
         log.info("ingest.worker.started")
 
     async def stop(self) -> None:

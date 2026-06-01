@@ -153,7 +153,10 @@ class Settings(BaseSettings):
         default=False,
         description="Run the oc-ingest worker (gh-poller + claude-hook receiver) inside core. Off by default; enable on the host.",
     )
-    ingest_socket_path: Path = Field(default=Path("/run/openclaw/ingest.sock"))
+    # Reads OC_INGEST_SOCKET (matches the hook scripts). The default lives
+    # under /run/openclaw (create it with the right owner, or override to a
+    # writable path like /tmp/openclaw/ingest.sock for a non-root host run).
+    ingest_socket: Path = Field(default=Path("/run/openclaw/ingest.sock"))
     ingest_sessions_dir: Path = Field(default=Path("/home/asher/openclaw/sessions"))
     # JSON array of {"owner","repo"} the gh-poller watches; empty → defaults.
     ingest_gh_repos: str = Field(default="")

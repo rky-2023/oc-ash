@@ -113,7 +113,7 @@ class ClaudeHookReceiver:
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
-        sock_path = Path(settings.ingest_socket_path)
+        sock_path = Path(settings.ingest_socket)
         sock_path.parent.mkdir(parents=True, exist_ok=True)
         if sock_path.exists():
             sock_path.unlink()
