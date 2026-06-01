@@ -145,6 +145,22 @@ class Settings(BaseSettings):
     github_attestations_repo: str = Field(default="rky-2023/openclaw-attestations")
     github_api_url: str = Field(default="https://api.github.com")
 
+    # ── Phase 3 event ingestion (oc-ingest worker) ───────────────────
+    # MVP: the gh-poller + claude-hook receiver run in-process inside core,
+    # reusing the audit envelope/signer/bus primitives (like the appender).
+    # Standalone-service split (own AppRole/mTLS) is Phase 11 (ADR-003 D3).
+    enable_ingest_worker: bool = Field(
+        default=False,
+        description="Run the oc-ingest worker (gh-poller + claude-hook receiver) inside core. Off by default; enable on the host.",
+    )
+    # Reads OC_INGEST_SOCKET (matches the hook scripts). The default lives
+    # under /run/openclaw (create it with the right owner, or override to a
+    # writable path like /tmp/openclaw/ingest.sock for a non-root host run).
+    ingest_socket: Path = Field(default=Path("/run/openclaw/ingest.sock"))
+    ingest_sessions_dir: Path = Field(default=Path("/home/asher/openclaw/sessions"))
+    # JSON array of {"owner","repo"} the gh-poller watches; empty → defaults.
+    ingest_gh_repos: str = Field(default="")
+
     @property
     def effective_github_app_private_key(self) -> str:
         if self.github_app_private_key:
