@@ -133,6 +133,39 @@ def test_entropy_net_keeps_short_lowentropy(monkeypatch):
     assert env.redacted_payload["note"] == "all good"
 
 
+def test_telemetry_subject_skips_entropy_net(monkeypatch):
+    # A git telemetry subject keeps a high-entropy SHA — the entropy net must
+    # NOT fire there (it's metadata, not a secret).
+    sha = "9f1c2a7e4b6d8c0f3a5e7b9d1c3f5a7e9b1d3f5a"  # 40-char hex
+    _patch_opa(monkeypatch, {"sha": "keep"})
+    env = _make_env("oc.event.git.openclaw.post-commit", {"sha": sha})
+    asyncio.run(redact(env))
+    assert env.redacted_payload["sha"] == sha
+    assert env.encrypted_blobs == []
+
+
+def test_nontelemetry_subject_still_drops_high_entropy(monkeypatch):
+    # Same high-entropy value on a NON-telemetry subject is still dropped.
+    sha = "9f1c2a7e4b6d8c0f3a5e7b9d1c3f5a7e9b1d3f5a"
+    _patch_opa(monkeypatch, {"sha": "keep"})
+    env = _make_env("oc.event.core.request.post", {"sha": sha})
+    asyncio.run(redact(env))
+    assert env.redacted_payload["sha"] == DROP_PLACEHOLDER
+
+
+def test_telemetry_subject_still_drops_named_secret(monkeypatch):
+    # Defense-in-depth: a field OPA classified "drop" is still dropped even on
+    # a telemetry subject (the entropy skip only affects the keep→drop net).
+    _patch_opa(monkeypatch, {"api_key": "drop", "sha": "keep"})
+    env = _make_env(
+        "oc.event.claude.PreToolUse",
+        {"api_key": "sk_live_LEAK", "sha": "9f1c2a7e4b6d8c0f3a5e7b9d1c3f5a7e9b1d3f5a"},
+    )
+    asyncio.run(redact(env))
+    assert env.redacted_payload["api_key"] == DROP_PLACEHOLDER
+    assert "sk_live_LEAK" not in env.to_wire_bytes().decode()
+
+
 # ── Fail-closed ──────────────────────────────────────────────────────
 
 

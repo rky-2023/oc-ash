@@ -25,7 +25,10 @@ import future.keywords
 
 # Key-name patterns that always mean "secret" → drop. Token-bounded so
 # "author"/"description" don't match bare "auth"/etc.
-secret_key_pattern := `(?i)(^|[_-])(api[_-]?key|secret|client[_-]?secret|access[_-]?key|token|password|passwd|authorization|cookie|bearer|private[_-]?key|refresh[_-]?token|session)([_-]|$)`
+# NOTE: bare `session` is deliberately absent — `session_id` is a correlation
+# id we keep. Real session secrets still match: `session_token` via `token`,
+# `session_secret` via `secret`.
+secret_key_pattern := `(?i)(^|[_-])(api[_-]?key|secret|client[_-]?secret|access[_-]?key|token|password|passwd|authorization|cookie|bearer|private[_-]?key|refresh[_-]?token)([_-]|$)`
 
 # Subject-prefix → set of payload field names that must be encrypted.
 encrypt_fields_for_subject(field) if {

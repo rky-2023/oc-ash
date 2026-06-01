@@ -50,6 +50,19 @@ OPA_UNAVAILABLE_PLACEHOLDER = "<redacted:opa-unavailable>"
 _ENTROPY_MIN_LEN = 20
 _ENTROPY_BITS_PER_CHAR = 3.5
 
+# Operational-telemetry subjects carry metadata (git SHAs, refs, paths, cwd,
+# session ids), not free-form user content. The entropy heuristic false-
+# positives badly there — a 40-char git SHA "looks" high-entropy but is not a
+# secret — and dropping it destroys the audit value of the event. So we skip
+# the entropy net for these subjects; the name-based secret regex (via OPA)
+# still applies as defense-in-depth (a field literally named *_token/secret/…
+# is still dropped even on a telemetry subject).
+_TELEMETRY_SUBJECT_PREFIXES = ("oc.event.git.", "oc.event.claude.", "oc.event.fs.")
+
+
+def _is_telemetry_subject(subject: str) -> bool:
+    return subject.startswith(_TELEMETRY_SUBJECT_PREFIXES)
+
 # OPA call budget — redaction is on the append hot path but must not hang it.
 _OPA_TIMEOUT_SECONDS = 2.0
 
@@ -187,12 +200,15 @@ async def redact(env: AuditEnvelope) -> AuditEnvelope:
         env.policy = _stamp_policy(env.policy, version)
         return env
 
+    telemetry = _is_telemetry_subject(env.subject)
     new_payload: dict[str, Any] = {}
     blobs: list[EncryptedBlob] = []
     for field, value in payload.items():
         decision = decisions.get(field, "keep")
-        # Entropy net: a "keep" field that looks like a secret is dropped.
-        if decision == "keep" and _is_high_entropy(value):
+        # Entropy net: a "keep" field that looks like a secret is dropped —
+        # but NOT on operational-telemetry subjects, where high-entropy values
+        # (SHAs, refs, paths) are legitimate metadata, not secrets.
+        if decision == "keep" and not telemetry and _is_high_entropy(value):
             decision = "drop"
 
         if decision == "drop":
