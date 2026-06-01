@@ -81,3 +81,6 @@ terraform.tfstate*
 
 # --- session ephemeral ---
 sessions/*/scratch/
+
+# oc-ingest per-session manifests (runtime output)
+sessions/

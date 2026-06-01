@@ -55,4 +55,18 @@ test_classifies_falsy_value if {
 	decisions["password"] == "drop" with input as _mk("oc.event.core.request.post", {"password": ""})
 }
 
+# session_id is a correlation id, not a secret → keep (bare `session` removed
+# from the regex). Real session secrets are still dropped.
+test_keep_session_id if {
+	decisions["session_id"] == "keep" with input as _mk("oc.event.claude.PreToolUse", {"session_id": "s-123"})
+}
+
+test_drop_session_token if {
+	decisions["session_token"] == "drop" with input as _mk("oc.event.core.request.post", {"session_token": "x"})
+}
+
+test_drop_session_secret if {
+	decisions["session_secret"] == "drop" with input as _mk("oc.event.core.request.post", {"session_secret": "x"})
+}
+
 _mk(subject, payload) := {"subject": subject, "action": "event", "payload": payload}
