@@ -295,6 +295,16 @@ The vault-agent sidecar (task 2.5b) runs core back inside the compose network wh
 
 ---
 
+## 21. The Rust ingester (`oc-fswatch`) needs a C toolchain to build — `cargo check` is not toolchain-free
+
+**Symptom:** `cd ingest/fswatch && cargo build` (or even `cargo check` / `cargo test`) fails with `error: linker 'cc' not found` on a host with Rust installed (rustup, cargo 1.96) but no `gcc`/`clang`.
+
+**Cause:** `cargo check` still **compiles and links the proc-macro / build-script helper binaries** (serde_derive, proc-macro2, libc's build script), which require a linker driver. rustc invokes `cc` as that driver on the `*-linux-gnu` target. The host had `/usr/bin/ld`, `rust-lld`, and the glibc crt objects (`crt1.o`/`libc.so`) present, but **not** the gcc-owned `crtbegin*.o` + `libgcc` — so pointing rustc at `rust-lld` directly still couldn't link a glibc binary. There is no toolchain-free way to even type-check a crate with proc-macro deps.
+
+**Fix:** install a C toolchain — `sudo apt-get install -y gcc` (or `build-essential`). The Bash tool can't `sudo` non-interactively, so the operator runs it once (`! sudo apt-get install -y gcc` in-session). After that `cargo build --release` + `cargo test` work normally. The pure-logic Python side (`build_fs_event` + dispatch) and the producer's wire format can be verified independently of the Rust build (the smoke harness POSTs to a fake socket), so don't block the whole task on the toolchain — write + test everything else first, then build the binary once `cc` is available.
+
+---
+
 ## Meta: how to add to this list
 
 Anytime you hit something non-obvious during ops:

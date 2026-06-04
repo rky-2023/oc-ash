@@ -218,3 +218,14 @@ export OC_ENABLE_INGEST_WORKER=true
 - Hooks POST to the same socket as Claude hooks (`oc.event.git.<repo>.<hook>`). While the worker is down each hook still returns in ≤3 s (curl timeout) and exits 0 — git stays usable but you miss events and pay the timeout per commit.
 - `git push --no-verify` (and similar) skips hooks by design.
 - Test one: `cd <watched-repo> && git commit --allow-empty -m test` → check `oc audit tail` for `oc.event.git.<repo>.post-commit`.
+
+### fswatch (oc-fswatch) not emitting / too noisy
+
+`oc-fswatch` (Rust, `ingest/fswatch/`) is a thin producer: it watches `OC_FSWATCH_ROOT` (default `/home/asher`) recursively and POSTs coalesced `{"source":"fswatch", …}` events to the **same** oc-ingest socket as the git/Claude hooks. The worker maps them to `oc.event.fs.<repo>.<kind>`.
+
+- **Build:** needs a C toolchain (`gcc`/`cc`) to link. `cd ingest/fswatch && cargo build --release` → `target/release/oc-fswatch`. `cargo test` runs the pure-logic tests (no toolchain-free path: linking the test binary also needs `cc`).
+- **Run (dev):** `OC_INGEST_SOCKET=/tmp/oc-ingest.sock OC_FSWATCH_EXCLUDE=ingest/fswatch/exclude.toml ./target/release/oc-fswatch`. Then `touch /home/asher/openclaw/SMOKE.md` → `oc.event.fs.openclaw.created` after ~debounce (default 1 s) + projection.
+- **Production:** install as the `oc-fswatch` user via `ingest/fswatch/oc-fswatch.service` (operator/sudo — see the unit header). Hardened: `ProtectSystem=strict`, `ReadOnlyPaths=/home/asher`, `RestrictAddressFamilies=AF_UNIX`.
+- **Missing events:** check the exclusion list in `ingest/fswatch/exclude.toml` (and the server-side `policy/ingest.rego` dist/build/coverage/`*.log` drop). Check the inotify watch limit — a large tree can exhaust it: `sysctl fs.inotify.max_user_watches` (raise to `524288` if `oc-fswatch` logs a watch error).
+- **Too noisy / high CPU:** widen `exclude.toml` (a `**/<dir>/**` entry also silences the bare directory event) and/or raise `OC_FSWATCH_DEBOUNCE_MS`. A burst of N writes to one file inside the window coalesces to one event carrying `change_count: N`.
+- **Down worker:** POSTs are best-effort with a 3 s timeout; a down/absent socket is logged to stderr and swallowed — fswatch never stalls, but you miss events until the worker is back.

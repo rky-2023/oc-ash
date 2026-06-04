@@ -1,0 +1,22 @@
+[package]
+name = "oc-fswatch"
+version = "0.1.0"
+edition = "2021"
+description = "openclaw filesystem-watch ingester (Phase 3 task 3.1): watches /home/asher recursively, debounces + filters, and POSTs coalesced fs events to the oc-ingest unix socket."
+license = "MIT"
+
+[[bin]]
+name = "oc-fswatch"
+path = "src/main.rs"
+
+[dependencies]
+notify = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+glob = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

@@ -1,0 +1,44 @@
+# systemd unit template for oc-fswatch (Phase 3 task 3.1).
+#
+# Operator install (needs sudo — not done by Claude):
+#   sudo useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin oc-fswatch
+#   sudo install -m0755 target/release/oc-fswatch /usr/local/bin/oc-fswatch
+#   sudo install -d -m0755 /etc/openclaw
+#   sudo install -m0644 exclude.toml /etc/openclaw/fswatch-exclude.toml
+#   sudo cp oc-fswatch.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now oc-fswatch
+#
+# The oc-ingest socket must be group-readable/writable by oc-fswatch, or run
+# the worker with OC_INGEST_SOCKET pointing at a path both users can reach.
+
+[Unit]
+Description=openclaw filesystem-watch ingester (oc-fswatch)
+After=network.target
+# Soft dependency: the worker owns the socket; oc-fswatch tolerates it being
+# down (best-effort POST), so we don't hard-require it.
+
+[Service]
+Type=simple
+User=oc-fswatch
+Group=oc-fswatch
+ExecStart=/usr/local/bin/oc-fswatch
+Environment=OC_FSWATCH_ROOT=/home/asher
+Environment=OC_FSWATCH_EXCLUDE=/etc/openclaw/fswatch-exclude.toml
+Environment=OC_INGEST_SOCKET=/run/openclaw/ingest.sock
+Restart=on-failure
+RestartSec=2
+
+# Hardening — fswatch only ever reads the watched tree and writes to a socket.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadOnlyPaths=/home/asher
+ReadWritePaths=/run/openclaw
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
