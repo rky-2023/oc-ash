@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.ingest import hooks as hooks_mod
-from app.ingest.hooks import build_git_event, handle_event, parse_hook
+from app.ingest.hooks import build_fs_event, build_git_event, handle_event, parse_hook
 
 
 def test_pretooluse_maps_subject_and_payload() -> None:
@@ -86,3 +86,50 @@ async def test_handle_event_routes_git(monkeypatch) -> None:
     assert calls["source"] == "git"
     assert calls["subject"] == "oc.event.git.openclaw.post-commit"
     assert calls["actor_id"] == "git:openclaw"
+
+
+# ── fswatch (task 3.1) ─────────────────────────────────────────────────────────
+
+
+def test_build_fs_event_subject_and_payload() -> None:
+    ev = build_fs_event({
+        "source": "fswatch", "path": "/home/asher/openclaw/PLAN.md",
+        "repo": "openclaw", "kind": "modified", "size_bytes": 1234,
+        "mtime": "2026-06-04T00:00:00Z", "change_count": 3,
+    })
+    assert ev["subject"] == "oc.event.fs.openclaw.modified"
+    assert ev["source"] == "fswatch"
+    assert ev["payload"]["path"] == "/home/asher/openclaw/PLAN.md"
+    assert ev["payload"]["change_count"] == 3
+    # path is forwarded to the ingest filter so noise globs can drop it.
+    assert ev["filter_fields"] == {"path": "/home/asher/openclaw/PLAN.md"}
+
+
+def test_build_fs_event_defaults_root_and_modified() -> None:
+    # No repo / kind supplied → subject falls back to _root / modified.
+    ev = build_fs_event({"path": "/home/asher/loose.txt"})
+    assert ev["subject"] == "oc.event.fs._root.modified"
+
+
+def test_build_fs_event_omits_missing_fields() -> None:
+    ev = build_fs_event({"repo": "openclaw", "kind": "deleted", "path": "/x"})
+    assert "size_bytes" not in ev["payload"]  # not provided → omitted, not null
+
+
+@pytest.mark.asyncio
+async def test_handle_event_routes_fswatch(monkeypatch) -> None:
+    calls = {}
+
+    async def _fake_emit(**kw):
+        calls.update(kw)
+        return True
+
+    monkeypatch.setattr(hooks_mod, "emit_event", _fake_emit)
+    ok = await handle_event({
+        "source": "fswatch", "repo": "openclaw", "kind": "created", "path": "/x",
+    })
+    assert ok is True
+    assert calls["source"] == "fswatch"
+    assert calls["subject"] == "oc.event.fs.openclaw.created"
+    assert calls["actor_id"] == "fswatch:openclaw"
+    assert calls["filter_fields"] == {"path": "/x"}

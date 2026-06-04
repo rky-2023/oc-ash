@@ -1,0 +1,37 @@
+# oc-fswatch exclusion list (Phase 3 task 3.1).
+#
+# Glob patterns for paths the watcher must NOT emit events for. `**` crosses
+# path separators; `*` stays within a single path segment. Edit + restart
+# oc-fswatch to apply (no recompile needed).
+#
+# This is the cheap, local first cut: it strips the highest-churn noise before
+# it ever reaches the socket. policy/ingest.rego applies a second, server-side
+# cut (dist/build/coverage/*.log) so the two layers overlap deliberately.
+
+exclude = [
+    # Git internals — constant churn. The meaningful git events come from the
+    # git hooks (task 3.2), which know commit vs merge vs rebase vs checkout.
+    "**/.git/objects/**",
+    "**/.git/refs/**",
+    "**/.git/logs/**",
+
+    # Dependency / build / cache trees — millions of events during installs.
+    "**/node_modules/**",
+    "**/__pycache__/**",
+    "**/.next/cache/**",
+    "**/target/**",
+    "**/.venv/**",
+    "**/.mypy_cache/**",
+    "**/.pytest_cache/**",
+
+    # Editor / transient files.
+    "**/*.pyc",
+    "**/*.swp",
+    "**/*.swo",
+    "**/*~",
+    "**/.#*",
+
+    # Our own output — watching it would create a feedback loop (the Claude-hook
+    # receiver writes session manifests here).
+    "/home/asher/openclaw/sessions/**",
+]

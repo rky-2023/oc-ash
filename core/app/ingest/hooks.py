@@ -113,14 +113,47 @@ def build_git_event(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_fs_event(body: dict[str, Any]) -> dict[str, Any]:
+    """Map an fswatch payload to subject + envelope payload. Pure — no IO.
+
+    Posted by the oc-fswatch Rust ingester (source=fswatch) with the coalesced
+    file event: path/repo/kind plus size_bytes/mtime/change_count. Subject:
+    oc.event.fs.<repo>.<kind>. The full path is forwarded as a filter field so
+    ingest.rego can drop generated-artifact noise (dist/build/coverage/*.log).
+    """
+    repo = body.get("repo") or "_root"
+    kind = body.get("kind") or "modified"
+    payload = {
+        k: body.get(k)
+        for k in ("path", "repo", "kind", "size_bytes", "mtime", "change_count", "rename_pair")
+        if body.get(k) is not None
+    }
+    return {
+        "subject": f"oc.event.fs.{_tok(repo)}.{_tok(kind)}",
+        "source": "fswatch",
+        "payload": payload,
+        "filter_fields": {"path": body.get("path", "")},
+    }
+
+
 async def handle_event(body: dict[str, Any]) -> bool:
-    """Dispatch a socket payload by `source` (git or claude)."""
-    if body.get("source") == "git":
+    """Dispatch a socket payload by `source` (git, fswatch, or claude)."""
+    source = body.get("source")
+    if source == "git":
         ev = build_git_event(body)
         return await emit_event(
             subject=ev["subject"],
             source="git",
             actor_id=f"git:{ev['payload'].get('repo')}",
+            payload=ev["payload"],
+            filter_fields=ev["filter_fields"],
+        )
+    if source == "fswatch":
+        ev = build_fs_event(body)
+        return await emit_event(
+            subject=ev["subject"],
+            source="fswatch",
+            actor_id=f"fswatch:{ev['payload'].get('repo')}",
             payload=ev["payload"],
             filter_fields=ev["filter_fields"],
         )

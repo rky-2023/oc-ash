@@ -59,8 +59,10 @@ fi
 CLAUDE_CONV="phase3-smoke-claude-$$"
 GIT_REPO=""
 GIT_SUBJECT=""
+FS_BIN="$REPO_DIR/ingest/fswatch/target/release/oc-fswatch"
+FS_SUBJECT=""
 
-# ── Generate events (Claude hook + git commit) ───────────────────────
+# ── Generate events (Claude hook + git commit + fswatch) ──────────────
 if $LIVE_OK; then
   hdr "Generating events"
   # Claude hook → oc.event.claude.Notification (non-empty body so it's kept).
@@ -80,6 +82,28 @@ if $LIVE_OK; then
     git -C "$TMPREPO" config core.hooksPath "$REPO_DIR/ingest/githooks/hooks"
     OC_INGEST_SOCKET="$SOCK" git -C "$TMPREPO" commit -q --allow-empty -m "phase3-smoke commit"
   ) && echo "  committed in throwaway repo ($GIT_REPO)" || echo "  (git commit failed)"
+
+  # fswatch (task 3.1): run oc-fswatch over a throwaway root pointed at the
+  # worker socket; create a file inside a "repo" subdir → oc.event.fs.<repo>.*.
+  # Only if the release binary has been built (needs a C toolchain).
+  if [[ -x "$FS_BIN" ]]; then
+    FSROOT="$(mktemp -d /tmp/oc-smoke-fs-XXXXXX)"
+    FS_REPO="fsmoke"
+    mkdir -p "$FSROOT/$FS_REPO"
+    OC_INGEST_SOCKET="$SOCK" OC_FSWATCH_ROOT="$FSROOT" \
+      OC_FSWATCH_EXCLUDE="$REPO_DIR/ingest/fswatch/exclude.toml" \
+      OC_FSWATCH_DEBOUNCE_MS=300 "$FS_BIN" >/dev/null 2>&1 &
+    FS_PID=$!
+    sleep 1                                  # let the watcher arm
+    echo "smoke" > "$FSROOT/$FS_REPO/SMOKE.md"
+    sleep 1                                  # > debounce → flush + POST
+    kill "$FS_PID" 2>/dev/null; wait "$FS_PID" 2>/dev/null
+    # File events map to created OR modified depending on coalescing; assert on the prefix.
+    FS_SUBJECT="oc.event.fs.${FS_REPO}."
+    echo "  generated fswatch event (root=$FSROOT repo=$FS_REPO)"
+  else
+    echo "  (oc-fswatch not built — skipping fswatch generation; build: cd ingest/fswatch && cargo build --release)"
+  fi
 
   # Force projection deterministically (avoids the in-process projector's
   # --reload poll lag — see BOOTSTRAP_LESSONS §20).
@@ -142,9 +166,20 @@ else
   fi
 fi
 
-# ── T6  fswatch (task 3.1) — deferred ────────────────────────────────
-hdr "T6: fswatch ingester"
-skip "T6: fswatch (task 3.1) not built — needs a Rust toolchain + oc-fswatch user/systemd (tracked deferral)"
+# ── T6  fswatch (task 3.1) → oc.event.fs.<repo>.* ────────────────────
+hdr "T6: fswatch → oc.event.fs.<repo>.*"
+if ! $LIVE_OK; then
+  skip "T6: $LIVE_MSG"
+elif [[ ! -x "$FS_BIN" ]]; then
+  skip "T6: oc-fswatch not built (cd ingest/fswatch && cargo build --release — needs a C toolchain)"
+else
+  n=$(pg "SELECT count(*) FROM openclaw.audit_entries WHERE subject LIKE '${FS_SUBJECT}%'")
+  if [[ "${n:-0}" -ge 1 ]]; then
+    pass "fswatch event projected (${FS_SUBJECT}* count=$n)"
+  else
+    fail "fswatch event not projected (got count=$n for ${FS_SUBJECT}*)"
+  fi
+fi
 
 # ── T7  gh-poller (task 3.4) ─────────────────────────────────────────
 hdr "T7: GitHub poller"
@@ -156,12 +191,14 @@ fi
 
 # ── cleanup ──────────────────────────────────────────────────────────
 [[ -n "${TMPREPO:-}" && -d "${TMPREPO:-}" ]] && rm -rf "$TMPREPO"
+[[ -n "${FSROOT:-}" && -d "${FSROOT:-}" ]] && rm -rf "$FSROOT"
 
 echo -e "\n═══════════════════════════════════"
 echo -e "  PASSED:  $PASSED"
 echo -e "  FAILED:  $FAILED"
 echo -e "  SKIPPED: $SKIPPED"
 echo -e "═══════════════════════════════════"
-echo "T1–T5 exercise the live worker (Claude + git ingesters → sign → immudb → projection,"
-echo "with telemetry preserved). T6 (fswatch) + T7 (gh-poller live) are tracked deferrals."
+echo "T1–T6 exercise the live worker (Claude + git + fswatch ingesters → sign → immudb →"
+echo "projection, with telemetry preserved). T6 runs when oc-fswatch is built; T7 (gh-poller"
+echo "live) needs GitHub App creds + a manual PR and stays a documented SKIP."
 [[ "$FAILED" -eq 0 ]]
