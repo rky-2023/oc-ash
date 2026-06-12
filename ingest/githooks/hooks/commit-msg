@@ -1,0 +1,13 @@
+#!/bin/sh
+# oc-ingest commit-msg hook: strip `Co-Authored-By: Claude` trailers from the
+# commit message (user preference — no AI co-author trailers). Non-blocking;
+# always exits 0. Commit telemetry is emitted by post-commit, not here (at
+# commit-msg time the commit doesn't exist yet), so this hook only edits $1.
+MSG_FILE="$1"
+[ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] || exit 0
+# Strip only the trailer line(s). We deliberately do NOT collapse blank lines
+# (Ashboard's original second sed deleted every empty line, which mangles the
+# subject/body separator of multi-paragraph messages). git's own message
+# cleanup removes any trailing blank line left where the trailer was.
+sed -i '/^Co-Authored-By: Claude/d' "$MSG_FILE"
+exit 0

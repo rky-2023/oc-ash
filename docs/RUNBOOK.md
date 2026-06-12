@@ -12,10 +12,33 @@ Vault auto-seals on restart. Shamir-3-of-5 is required to unseal.
 
 ```bash
 # Run the unseal script; enter three key shares from your password manager.
-bash infra/scripts/02-unseal-vault.sh
+bash infra/scripts/03-unseal-vault.sh
 ```
 
 Verify: `docker exec oc-vault vault status` → `Sealed: false`.
+
+**If vault/immudb crash-loop after the reboot** (vault: `Error initializing
+storage of type raft: ... permission denied`; immudb: exits 2 right after its
+banner) the **LUKS data volumes did not unlock on boot.** The compose volumes
+`oc-vault-data` / `oc-immudb-data` are *bind* volumes
+(`driver_opts: device=/mnt/openclaw/{vault,immudb}, o=bind`), so their real data
+lives in the LUKS images `/var/lib/openclaw/luks/{vault,immudb}.img` mounted at
+`/mnt/openclaw/{vault,immudb}`. After a reboot those mounts are gone (LUKS is not
+auto-unlocked), so the bind resolves to the **empty mountpoint dir** and the
+container sees no data.
+
+Diagnose: `mountpoint -q /mnt/openclaw/vault` (→ exit 1 = not mounted) and
+`sudo ls -lan /var/snap/docker/common/var-lib-docker/volumes/oc-vault-data/_data`
+(empty = unmounted). **Do NOT chown + start an empty dir** — that initializes a
+fresh, empty store and loses all secrets + the audit chain. Recovery:
+
+```bash
+sudo bash infra/scripts/00-create-luks-volumes.sh   # idempotent: cryptsetup open + mount; prompts LUKS passphrase
+mountpoint -q /mnt/openclaw/vault && echo mounted
+docker compose -f infra/docker-compose.openclaw.yml up -d --force-recreate vault immudb
+#   (recreate, not restart — containers captured the empty bind at first start)
+bash infra/scripts/03-unseal-vault.sh               # then unseal (above)
+```
 
 ### Log in as openclaw-admin (AppRole)
 
