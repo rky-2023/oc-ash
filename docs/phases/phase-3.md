@@ -243,13 +243,53 @@ All tests must pass (allowing for the manual nature of #3 and #4).
 ## Phase 3 exit criteria (all must be true)
 
 - [x] fswatch (`oc-fswatch`, Rust) built + producer verified end-to-end (watch→debounce→exclude→POST). *Running as the dedicated `oc-fswatch` user via systemd is operator/sudo-gated (unit shipped in `ingest/fswatch/oc-fswatch.service`).*
-- [ ] git hooks installed in every `.git/` under `/home/asher/*` and firing on commit/merge/checkout/rewrite/push.
-- [ ] Claude Code hooks installed in `~/.claude/settings.json` and emitting on session lifecycle + tool calls.
-- [ ] gh-poller polling at least `rky-2023/oc-ash` and `rky-2023/openclaw-attestations` at the cadences in 3.4.
-- [ ] `policy/ingest.rego` loaded; noise filters working.
-- [ ] All five tests in `tests/phase-3-smoke.sh` green.
-- [ ] Audit viewer correctly classifies and renders all four ingester sources.
-- [ ] `docs/RUNBOOK.md` has the operational entries from 3.7.
+- [x] git hooks installed in every `.git/` under `/home/asher/*` (AI, ashboard-backend, openclaw, Ashboard) — `core.hooksPath` → shared `ingest/githooks/hooks`. *Live firing through the worker is operator-gated (smoke T3).* Ashboard's pre-existing `Co-Authored-By: Claude` strip was preserved by porting it into the shared `commit-msg` hook (so the rule now applies repo-wide).
+- [x] Claude Code hooks installed in `~/.claude/settings.json` (all 7 lifecycle events; existing non-oc hooks preserved, `.bak` saved). *Emitting through the worker is operator-gated (smoke T2).*
+- [x] gh-poller configured to poll `rky-2023/oc-ash` + `rky-2023/openclaw-attestations` (the built-in default in `poller._repos()`; installation token from Vault-backed settings). *Live polling needs the worker + creds (smoke T7).*
+- [x] `policy/ingest.rego` loaded; noise filters working (merged PR #42, `opa test` green).
+- [ ] All seven checks in `tests/phase-3-smoke.sh` green — **operator-gated:** `--infra-only` is clean (0 fail, 7 SKIP); the live T1–T7 need Vault creds (gpg-passphrase-gated `run-with-vault-creds.sh`) + the worker enabled.
+- [ ] Audit viewer correctly classifies and renders all four ingester sources — verified during the live smoke run above.
+- [x] `docs/RUNBOOK.md` has the operational entries from 3.7.
+
+### Live verification (operator-gated) — exact procedure
+
+The two remaining `[ ]` boxes need Vault creds (the gpg passphrase, denied to the
+agent) + the in-process ingest worker. This is a **two-terminal** flow; paths are
+relative to the repo root `/home/asher/openclaw`. Source of truth: the header of
+`tests/phase-3-smoke.sh`.
+
+**Prerequisite — infra must be healthy.** After any host reboot Vault auto-seals
+and the stateful containers can crash-loop on lost volume ownership
+(`BOOTSTRAP_LESSONS.md §2`; recovery in `RUNBOOK.md → "Unseal Vault after a host
+reboot"`). Before the smoke, confirm: `docker ps` shows `oc-vault`, `oc-immudb`,
+`oc-nats`, `oc-opa` healthy, and `docker exec oc-vault vault status` →
+`Sealed: false`. If vault/immudb are `Restarting`, fix volume ownership + unseal
+first — the live smoke can't pass until they're up.
+
+**Terminal A — start core + the ingest worker** (prompts once for the gpg passphrase):
+
+```sh
+cd /home/asher/openclaw
+export OC_ENABLE_INGEST_WORKER=true OC_INGEST_SOCKET=/tmp/oc-ingest.sock
+bash core/scripts/run-with-vault-creds.sh    # leave running; do NOT pipe through tail/grep
+```
+
+**Terminal B — source creds into the shell, then run the smoke:**
+
+```sh
+cd /home/asher/openclaw
+export OC_ENABLE_INGEST_WORKER=true OC_INGEST_SOCKET=/tmp/oc-ingest.sock
+source core/scripts/oc-with-vault-creds.sh   # gpg-agent usually has the passphrase cached
+bash tests/phase-3-smoke.sh
+```
+
+Pass condition: **exit 0 with 0 FAIL** (fswatch + gh-poller live polling are documented
+SKIPs, not failures). Then eyeball the audit viewer for all four sources and flip the two
+boxes above. No-creds sanity check: `bash tests/phase-3-smoke.sh --infra-only` → 0 fail, 7 SKIP.
+
+> Note the full paths: `core/scripts/run-with-vault-creds.sh` and
+> `core/scripts/oc-with-vault-creds.sh` (not `./scripts/…`, which only resolves
+> after `cd core`).
 
 ---
 
@@ -294,3 +334,4 @@ All tests must pass (allowing for the manual nature of #3 and #4).
 - **2026-06-01 (v1.4)** — **Redaction tuning** (fixes live finding: ingest telemetry was being gutted). The Phase 2 redaction pipeline over-redacted Phase 3 events — claude `cwd`/`git_head`/`session_id` and git `sha`/`ref`/`author`/`subject` all came back `<redacted:secret>`. Two fixes: (1) `policy/redaction.rego` — removed bare `session` from `secret_key_pattern` so `session_id` is kept (`session_token`/`session_secret` still dropped via `token`/`secret`); (2) `core/app/audit/redaction.py` — the Shannon-entropy drop net now skips operational-telemetry subjects (`oc.event.{git,claude,fs}.*`), where high-entropy values (SHAs, refs, paths) are legitimate metadata; the name-based secret regex still applies there as defense-in-depth. Added `sessions/` to `.gitignore`. Tests: `opa test` 30/30, pytest 83 passed (3 rego + 3 python added).
 - **2026-06-04 (v1.6)** — **Task 3.1 fswatch** built. `ingest/fswatch/` is a thin Rust producer (`notify` 6, no async runtime — std mpsc + a debounce-flush loop): watches `OC_FSWATCH_ROOT` (default `/home/asher`) recursively, drops noise via `exclude.toml` globs (a `**/<dir>/**` entry also silences the bare directory event), coalesces per-path bursts inside `OC_FSWATCH_DEBOUNCE_MS` (default 1 s) into one event carrying `change_count`, maps Create/Modify/Remove → created/modified/deleted (+ rename → deleted/created pair sharing a `rename_pair`), and **POSTs `{"source":"fswatch", …}` to the oc-ingest unix socket** — NOT direct NATS (deviation from the v1 draft, consistent with the unified-worker architecture; standalone split → Phase 11). Worker side: `hooks.py` gained `build_fs_event` + a `source=="fswatch"` dispatch → `oc.event.fs.<repo>.<kind>`; `<repo>` = immediate child of the root (loose files → `_root`). `policy/ingest.rego` already filters fswatch noise and `oc.event.fs.*` is in the redaction telemetry-skip list (#46), so no policy change was needed. Smoke T6 promoted from a deferral SKIP to a real live check (runs `oc-fswatch` over a throwaway root → asserts `oc.event.fs.fsmoke.*` projects; SKIPs cleanly if the binary isn't built). Tests: 4 Rust unit tests (repo mapping, exclude-glob matching, bare-dir expansion) + 4 Python tests; core suite 87 passed; a standalone producer smoke (fake socket) confirmed coalescing (6 writes→1 event change_count=6), exclusion, and created/modified/deleted mapping. **Build prerequisite:** linking needs a C toolchain (`gcc`/`cc`) — `cargo build`/`check`/`test` all fail at the link step without one; `gcc` was installed on the host to build it. Running as the `oc-fswatch` systemd user remains operator/sudo-gated (unit + README shipped). 3.7 RUNBOOK fswatch entry added.
 - **2026-06-01 (v1.5)** — **Task 3.6 end-to-end smoke** (`tests/phase-3-smoke.sh`), modeled on `phase-2-smoke.sh`. T1 worker socket; T2 Claude hook → `oc.event.claude.Notification`; T3 real git commit in a throwaway `/tmp` repo (wired to the shared hooks) → `oc.event.git.<repo>.post-commit`; T4 both sigs + chain valid; T5 redaction keeps telemetry (asserts `session_id`/`cwd` survive — validates v1.4). Projection is forced via `oc audit projection rebuild` after generating events, so it's deterministic despite the in-process projector's `--reload` lag (§20). T6 fswatch + T7 gh-poller-live are explicit tracked-deferral SKIPs. `--infra-only` runs cleanly with no creds (all SKIP, exit 0); full run needs the sourced creds + the worker enabled (operator-gated). Live T1–T5 were verified manually during the #43/#45 live-check; the script automates that path.
+- **2026-06-13 (v1.7)** — **Host install of the ingesters (closing the un-gated Phase 3 exit criteria).** (1) **git hooks** — `core.hooksPath` → shared `ingest/githooks/hooks` set on all four `/home/asher/*` repos. Ashboard already had a `commit-msg` hook stripping `Co-Authored-By: Claude` (enforces the user's no-trailers preference); rather than clobber it, the strip was **ported into a new shared `ingest/githooks/hooks/commit-msg`** so the rule now applies repo-wide *and* Ashboard gains the telemetry hooks. Verified the shared hook strips the trailer. (2) **Claude hooks** — `install-claude-hooks.py --apply` merged the 7 lifecycle hooks into `~/.claude/settings.json` (existing `PostToolUse` hook preserved; timestamped `.bak` written). (3) **gh-poller** — confirmed `poller._repos()` already defaults to `oc-ash` + `openclaw-attestations`, so no DB seeding needed (the v1 draft's `gh-poller.repos` lookup row is superseded by env-config + default). (4) fswatch binary confirmed built (`target/release/oc-fswatch`); `ingest.rego` confirmed merged; RUNBOOK confirmed complete. **Remaining to fully close Phase 3 = one operator-gated live run:** unlock Vault creds (`run-with-vault-creds.sh`, gpg-passphrase) + enable the worker (`OC_ENABLE_INGEST_WORKER=true`), then `tests/phase-3-smoke.sh` (live T1–T7) + eyeball the audit viewer for all four sources. The gpg cache was cold this session and the decrypt is denied to the agent, so the live leg is the user's to run. Optional sudo-gated hardening (the `oc-fswatch` systemd user) stays deferred per ADR-003 D3.
