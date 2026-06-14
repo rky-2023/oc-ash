@@ -12,10 +12,21 @@ Vault auto-seals on restart. Shamir-3-of-5 is required to unseal.
 
 ```bash
 # Run the unseal script; enter three key shares from your password manager.
-bash infra/scripts/02-unseal-vault.sh
+bash infra/scripts/03-unseal-vault.sh
 ```
 
 Verify: `docker exec oc-vault vault status` → `Sealed: false`.
+
+**If vault/immudb crash-loop after the reboot** (vault: `Error initializing
+storage of type raft: ... permission denied`; immudb: exits 2 right after its
+banner) the data-volume ownership was lost — see `BOOTSTRAP_LESSONS.md §2`.
+Re-chown the volume `_data` to the container uid (vault `100:1000`, immudb
+`3322:3322`) **only after confirming the dir is non-empty** (an empty dir means
+the real data isn't mounted — chowning + starting would init a fresh, empty
+store), then `docker restart oc-vault oc-immudb` and unseal. On hosts still on
+the pre-migration named volumes (`oc-vault-data`/`oc-immudb-data` under
+`/var/snap/docker/...`, not `/mnt/openclaw/*`), the `01`/`07` bring-up scripts
+don't apply — chown the named-volume `_data` path directly.
 
 ### Log in as openclaw-admin (AppRole)
 
